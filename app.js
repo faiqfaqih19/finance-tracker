@@ -77,7 +77,13 @@ async function loadTransactions() {
     const tx = db.transaction('transactions', 'readonly');
     const store = tx.objectStore('transactions');
     const req = store.getAll();
-    req.onsuccess = () => resolve(req.result || []);
+    req.onsuccess = () => {
+      const items = (req.result || []).map(t => ({
+        status: 'active',
+        ...t
+      }));
+      resolve(items);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -627,7 +633,7 @@ function openTxModal(tx = null) {
   const dlg = $('#dlg');
   if (!dlg) return;
 
-  editingTx = tx ? { ...tx } : {
+  editingTx = tx ? { status: 'active', ...tx } : {
     id: uuid(),
     type: 'Pengeluaran',
     amount: 0,
@@ -636,6 +642,7 @@ function openTxModal(tx = null) {
     date: today(),
     payment: 'QRIS',
     note: '',
+    status: 'active',
     createdAt: Date.now()
   };
 
@@ -753,6 +760,7 @@ function openTxModal(tx = null) {
 
       const record = {
         ...editingTx,
+        status: editingTx.status || 'active',
         type,
         amount: numAmt,
         merchant,
@@ -795,9 +803,9 @@ async function seedDefaultDataIfEmpty() {
 
   const t = today();
   const samples = [
-    { id: uuid(), type: 'Pemasukan', amount: 8500000, merchant: 'Gaji Bulanan', category: 'Gaji', date: t, payment: 'BCA', note: 'Gaji pokok', createdAt: Date.now() - 3000 },
-    { id: uuid(), type: 'Pengeluaran', amount: 550130, merchant: 'Shopee / BRIVA', category: 'Belanja', date: t, payment: 'BRI', note: 'Pembayaran tagihan Shopee', createdAt: Date.now() - 2000 },
-    { id: uuid(), type: 'Pengeluaran', amount: 35000, merchant: 'Kopi Kenangan', category: 'Makanan & Minuman', date: t, payment: 'QRIS', note: 'Es kopi kenangan mantan', createdAt: Date.now() - 1000 }
+    { id: uuid(), type: 'Pemasukan', amount: 8500000, merchant: 'Gaji Bulanan', category: 'Gaji', date: t, payment: 'BCA', note: 'Gaji pokok', status: 'active', createdAt: Date.now() - 3000 },
+    { id: uuid(), type: 'Pengeluaran', amount: 550130, merchant: 'Shopee / BRIVA', category: 'Belanja', date: t, payment: 'BRI', note: 'Pembayaran tagihan Shopee', status: 'active', createdAt: Date.now() - 2000 },
+    { id: uuid(), type: 'Pengeluaran', amount: 35000, merchant: 'Kopi Kenangan', category: 'Makanan & Minuman', date: t, payment: 'QRIS', note: 'Es kopi kenangan mantan', status: 'active', createdAt: Date.now() - 1000 }
   ];
 
   for (const s of samples) {
