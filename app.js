@@ -1,46 +1,823 @@
-import{CATEGORIES,money,today,escape as e,valid,duplicate,aggregate,amount,date,importRows,csvExport,chatDraft}from'./core.mjs';
-const $=s=>document.querySelector(s),colors=['#315c42','#91ad72','#c4d8aa','#d8c698','#b1c9b1','#799779'];
-const paths={dashboard:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',transactions:'M5 4h14v16H5z M8 8h8 M8 12h8 M8 16h4',drafts:'M5 4h14v16H5z M8 8h5 M8 12h3 M15 14v5 M12.5 16.5h5',assistant:'M21 11a8 8 0 0 1-8 8H8l-5 3v-7a8 8 0 1 1 18-4z M8 10h.01 M12 10h.01 M16 10h.01',connections:'M8 12a4 4 0 0 1 0-6l2-2a4 4 0 0 1 6 6 M16 12a4 4 0 0 1 0 6l-2 2a4 4 0 0 1-6-6 M9 15l6-6',plus:'M12 5v14 M5 12h14',upload:'M12 16V3 M7 8l5-5 5 5 M4 15v6h16v-6',download:'M12 3v13 M7 11l5 5 5-5 M4 18v3h16v-3',calendar:'M4 5h16v16H4z M8 3v4 M16 3v4 M4 10h16',arrow:'M5 12h14 M14 7l5 5-5 5'};
-function icon(name){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name]||paths.transactions}"/></svg>`}
-const labels={dashboard:'Ringkasan',transactions:'Transaksi',drafts:'Draf & nota',assistant:'Asisten keuangan',connections:'Koneksi & data'};
-let rows=[],db,view='dashboard',period='month',filter='active',query='',typeFilter='',categoryFilter='',page=1,messages=[],busy=false;const PAGE=15;
-function id(){return crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(16).slice(2)}
-function toast(text){$('#toast').textContent=text;$('#toast').classList.add('show');clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4000)}
-async function initDB(){return await new Promise((res,rej)=>{const q=indexedDB.open('finance-tracker-v1',1);q.onupgradeneeded=()=>{q.result.createObjectStore('transactions',{keyPath:'id'});q.result.createObjectStore('receipts',{keyPath:'id'})};q.onsuccess=()=>res(q.result);q.onerror=()=>rej(Error('Penyimpanan perangkat tidak tersedia. Izinkan penyimpanan situs untuk mencatat transaksi.'));})}
-async function readAll(){return new Promise((res,rej)=>{const q=db.transaction('transactions').objectStore('transactions').getAll();q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
-async function write(record,receipt){return new Promise((res,rej)=>{const tx=db.transaction(receipt?['transactions','receipts']:['transactions'],'readwrite');tx.objectStore('transactions').put(record);if(receipt)tx.objectStore('receipts').put(receipt);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error)})}
-async function save(record,receipt){if(!db)throw Error('Penyimpanan belum tersedia.');await write(record,receipt);rows=await readAll();render()}
-function fmtDate(d){return new Intl.DateTimeFormat('id-ID',{day:'2-digit',month:'short',year:'numeric',timeZone:'Asia/Jakarta'}).format(new Date(d+'T12:00:00Z'))}
-function nav(){const draftCount=rows.filter(t=>t.status==='draft').length;$('#nav').innerHTML=Object.entries(labels).map(([key,label])=>`<button class="nav-item ${view===key?'active':''}" data-view="${key}" aria-label="${label}" ${view===key?'aria-current="page"':''}>${icon(key)}<span>${label}</span>${key==='drafts'&&draftCount?`<span class="badge">${draftCount}</span>`:''}</button>`).join('');$('#crumb').textContent=labels[view]}
-function heading(title,sub,actions='',eyebrow='RUANG KEUANGAN PRIBADI'){return `<section class="page-heading"><div><div class="eyebrow"><span class="status-dot"></span>${eyebrow}</div><h1>${title}</h1><p>${sub}</p></div><div class="actions">${actions}</div></section>`}
-function primary(){return `<button class="button primary" data-action="new">${icon('plus')} Catat transaksi</button>`}
-function periodSelect(){return `<select class="period-select" id="periodSelect" aria-label="Periode ringkasan">${[['month','Bulan ini'],['today','Hari ini'],['previous','Bulan lalu'],['all','Semua catatan']].map(([k,l])=>`<option value="${k}" ${period===k?'selected':''}>${l}</option>`).join('')}</select>`}
-function transactionRows(list,actions=false){return list.map(t=>`<tr><td><div class="merchant-cell"><span class="transaction-icon">${t.type==='Pemasukan'?'â†™':t.category==='Makanan & Minuman'?'â™§':t.category==='Transportasi'?'â†—':'â–±'}</span><div><strong>${e(t.merchant||'Merchant belum diisi')}</strong><small>${e(t.note?.slice(0,38)||t.type)}</small></div></div></td><td class="category-column"><span class="tag">${e(t.category)}</span></td><td class="date-column">${e(fmtDate(t.date))}</td><td class="payment-column">${e(t.payment)}</td><td class="amount-cell ${t.type==='Pemasukan'?'income-amount':''}">${t.type==='Pemasukan'?'+':'âˆ’'}${money(t.amount)}</td>${actions?`<td><div class="row-actions"><button data-edit="${e(t.id)}" aria-label="Ubah ${e(t.merchant)}">Ubah</button>${t.status==='active'?`<button data-cancel="${e(t.id)}" aria-label="Batalkan ${e(t.merchant)}">Batalkan</button>`:''}</div></td>`:''}</tr>`).join('')}
-function table(list,actions=false){return `<div style="overflow:auto"><table class="recent-table"><thead><tr><th>TRANSAKSI</th><th class="category-column">KATEGORI</th><th class="date-column">TANGGAL</th><th class="payment-column">PEMBAYARAN</th><th style="text-align:right">NOMINAL</th>${actions?'<th></th>':''}</tr></thead><tbody>${transactionRows(list,actions)}</tbody></table></div>`}
-function chart(a){const end=today(),data=Array.from({length:7},(_,i)=>{const d=new Date(new Date(end+'T12:00:00Z').getTime()-(6-i)*86400000).toISOString().slice(0,10);return {date:d,income:rows.filter(t=>t.status==='active'&&t.date===d&&t.type==='Pemasukan').reduce((n,t)=>n+t.amount,0),expense:rows.filter(t=>t.status==='active'&&t.date===d&&t.type==='Pengeluaran').reduce((n,t)=>n+t.amount,0)}});const max=Math.max(10000,...data.flatMap(t=>[t.income,t.expense])),any=data.some(t=>t.income||t.expense);return `<div class="panel activity-panel"><div class="panel-head"><div><h2>Arus keuangan</h2><p>Gambaran tujuh hari terakhir</p></div><div class="legend"><span><i></i>Masuk</span><span><i class="expense"></i>Keluar</span></div></div><div class="chart"><div class="chart-grid">${[1,.66,.33,0].map(n=>`<span><i>${any?(max*n>=1e6?(max*n/1e6).toFixed(1)+'jt':Math.round(max*n/1000)+'rb'):'â€”'}</i></span>`).join('')}</div><div class="bars">${data.map(t=>`<div class="bar-pair" title="${e(fmtDate(t.date))}: masuk ${money(t.income)}, keluar ${money(t.expense)}"><div class="bar income" style="height:${t.income/max*100}%"></div><div class="bar" style="height:${t.expense/max*100}%"></div><label>${t.date.slice(-2)} ${new Intl.DateTimeFormat('id-ID',{month:'short'}).format(new Date(t.date+'T12:00:00Z'))}</label></div>`).join('')}</div>${!any?'<div class="chart-empty"><strong>Ruang untuk cerita keuangan Anda</strong><span>Aktivitas muncul setelah transaksi dicatat.</span></div>':''}</div></div>`}
-function categories(a){let running=0;const bg=a.expense?`conic-gradient(${a.categories.map(([c,n],i)=>{const start=running;running+=n/a.expense*100;return `${colors[i%colors.length]} ${start}% ${running}%`}).join(',')})`:'#edf1e7';return `<div class="panel category-panel"><div class="panel-head"><div><h2>Ke mana uang pergi?</h2><p>Pengeluaran ${e(a.period.label.toLowerCase())}</p></div><span class="small-label">â†—</span></div><div class="donut-wrap"><div class="donut" style="background:${bg}" role="img" aria-label="${a.categories.length?'Diagram pengeluaran per kategori':'Belum ada pengeluaran'}"><div class="donut-center"><strong>${a.count}</strong>transaksi aktif</div></div><div class="category-list">${a.categories.length?a.categories.slice(0,3).map(([c,n],i)=>`<div class="category-item"><i style="background:${colors[i]}"></i><span>${e(c)}<small>${money(n)}</small></span><b>${Math.round(n/a.expense*100)}%</b></div>`).join(''):'<div class="category-item"><span>Belum ada kategori<small>Catat pengeluaran pertama Anda.</small></span></div>'}</div></div></div>`}
-function dashboard(){const a=aggregate(rows,period),recent=a.list.slice().sort((a,b)=>b.createdAt-a.createdAt).slice(0,4);return heading('Uang Anda, lebih terarah.','Satu tempat untuk memahami keuangan pribadi.',`<span class="date-button">${icon('calendar')}${e(fmtDate(today()))}</span>${primary()}`)+`<div class="stats"><section class="balance-card"><div class="card-label"><span>Selisih keuangan tercatat</span><span>â†—</span></div><div class="balance-number">${a.net<0?'âˆ’':''}${money(Math.abs(a.net))}</div><p><span class="mini-chip">${e(a.period.label)}</span> Dari transaksi aktif, bukan saldo rekening.</p></section><section class="stat-card"><div class="card-label"><span>Total pemasukan</span><span class="stat-icon">â†™</span></div><div class="stat-number">${money(a.income)}</div><p>${a.list.filter(t=>t.type==='Pemasukan').length} transaksi pemasukan tercatat</p></section><section class="stat-card"><div class="card-label"><span>Total pengeluaran</span><span class="stat-icon expense-icon">â†—</span></div><div class="stat-number">${money(a.expense)}</div><p>${a.list.filter(t=>t.type==='Pengeluaran').length} transaksi pengeluaran tercatat</p></section></div><div class="hint-strip"><span><i class="status-dot"></i> Catatan di perangkat ini Â· Google Sheets belum tersinkron otomatis</span>${periodSelect()}</div><div class="dashboard-grid">${chart(a)}${categories(a)}</div><section class="panel recent-panel"><div class="panel-head"><div><h2>Transaksi terbaru</h2><p>Detail kecil yang membuat gambaran lebih jelas</p></div><button class="text-button" data-view="transactions">Lihat semua â†—</button></div>${recent.length?table(recent):'<div class="table-empty"><div class="empty-circle">ï¼‹</div><h3>Mulai dari transaksi pertama</h3><p>Catat manual atau impor CSV dari spreadsheet Anda.</p><button class="button" data-action="import">'+icon('upload')+' Impor spreadsheet</button></div>'}</section><section class="insight"><div class="insight-icon">âœ§</div><div><h3>${a.categories.length?'Perhatikan kategori '+e(a.categories[0][0]):'Satu catatan kecil, gambaran besar.'}</h3><p>${a.categories.length?'Kategori terbesar Anda pada periode ini: '+money(a.categories[0][1])+'. Tinjau detailnya sebelum membuat rencana belanja.':'Mulai dengan mencatat pengeluaran sehari-hari. Biar angka membantu Anda membuat keputusan.'}</p></div><button class="text-button" data-view="assistant">Tanya asisten â†—</button></section>`}
-function transactions(){let list=rows.filter(t=>t.status===filter&&(!query||[t.merchant,t.note,t.category,t.payment].some(x=>String(x||'').toLowerCase().includes(query.toLowerCase())))&&(!typeFilter||t.type===typeFilter)&&(!categoryFilter||t.category===categoryFilter)).sort((a,b)=>b.date.localeCompare(a.date)||b.createdAt-a.createdAt);const pages=Math.max(1,Math.ceil(list.length/PAGE));page=Math.min(page,pages);return heading('Semua transaksi.','Catatan rapi, keputusan lebih pasti.',`<button class="button" data-action="export">${icon('download')} Ekspor</button>${primary()}`)+`<section class="panel"><div class="subnav">${[['active','Aktif'],['cancelled','Dibatalkan']].map(([k,l])=>`<button data-filter="${k}" class="${filter===k?'active':''}">${l} <span class="small-label">${rows.filter(t=>t.status===k).length}</span></button>`).join('')}<button data-view="drafts">Draf menunggu</button></div><div class="filters"><div class="search-wrap"><label class="screen-reader" for="search">Cari transaksi</label><input id="search" placeholder="Cari merchant, kategori, atau keteranganâ€¦" value="${e(query)}"></div><select id="typeFilter" aria-label="Filter jenis"><option value="">Semua jenis</option>${['Pengeluaran','Pemasukan'].map(t=>`<option ${typeFilter===t?'selected':''}>${t}</option>`).join('')}</select><select id="categoryFilter" aria-label="Filter kategori"><option value="">Semua kategori</option>${[...new Set(rows.map(t=>t.category))].sort().map(t=>`<option ${categoryFilter===t?'selected':''}>${e(t)}</option>`).join('')}</select></div>${list.length?table(list.slice((page-1)*PAGE,page*PAGE),true):'<div class="full-empty"><div class="empty-circle">â–±</div><h2>Belum ada transaksi di sini</h2><p>Catat transaksi baru atau ubah pencarian untuk menemukan catatan Anda.</p>'+primary()+'</div>'}<div class="pagination"><span>${list.length} transaksi Â· halaman ${page} dari ${pages}</span><div class="actions"><button class="button" data-page="${page-1}" ${page<=1?'disabled':''}>â†</button><button class="button" data-page="${page+1}" ${page>=pages?'disabled':''}>â†’</button></div></div></section>`}
-function drafts(){const list=rows.filter(t=>t.status==='draft').sort((a,b)=>b.createdAt-a.createdAt);return heading('Periksa, lalu simpan.','Draf belum masuk ke total keuangan Anda.',`<button class="button primary" data-action="receipt">${icon('upload')} Unggah nota</button>`)+(!list.length?'<section class="panel full-empty"><div class="empty-circle">âœ“</div><h2>Semua sudah beres.</h2><p>Nota dan transaksi yang perlu diperiksa akan muncul di sini. Anda selalu memegang keputusan untuk menyimpan.</p><button class="button" data-action="receipt">Unggah nota pertama</button></section>':`<div class="draft-grid">${list.map(t=>`<article class="panel draft-card"><div class="draft-header"><span class="tag draft">Perlu konfirmasi</span><span class="small-label">${e(fmtDate(t.date))}</span></div><h3>${money(t.amount)}</h3><p class="merchant">${e(t.merchant||'Merchant belum diisi')}</p><div class="draft-details"><span>${e(t.category)}</span><span>Â·</span><span>${e(t.payment)}</span></div><p class="draft-reason">${e(t.reason||'Periksa detail transaksi sebelum menyimpan.')}</p><div class="draft-buttons"><button class="button primary" data-confirm="${e(t.id)}">âœ“ Simpan</button><button class="button" data-edit="${e(t.id)}">Koreksi</button><button class="button danger" data-ignore="${e(t.id)}">Abaikan</button></div>${t.receiptId?`<button class="text-button" style="margin-top:12px" data-receipt="${e(t.receiptId)}">Lihat bukti â†—</button>`:''}</article>`).join('')}</div>`)}
-function connections(){return heading('Satu ruang. Tetap milik Anda.','Kelola catatan dan hubungan dengan alat yang sudah dipakai.','', 'PENGATURAN & KONEKSI')+`<div class="connection-grid"><section class="panel connection-card"><div class="connection-icon">â–¦</div><h2>Google Sheets</h2><span class="connection-badge">Sinkronisasi otomatis belum tersedia</span><p>Gunakan catatan dari PENCATAT KEUANGAN AI dengan mengekspor tab Transaksi sebagai CSV, lalu impor di sini. Data aplikasi dan spreadsheet tidak berubah otomatis satu sama lain.</p><div class="actions"><button class="button primary" data-action="import">Impor CSV</button><a class="button" href="https://docs.google.com/spreadsheets/d/1naiTR6ydbhSuzNK0426mRvCVtjmAfnEoMaBVlTBdtwg/edit" target="_blank" rel="noreferrer">Buka spreadsheet â†—</a></div></section><section class="panel connection-card"><div class="connection-icon">â†—</div><h2>Bot Telegram</h2><span class="top-badge">Bot yang sudah Anda gunakan</span><p>Untuk membaca nota dengan Gemini, kirim foto ke bot Telegram. Hasil bot masuk ke spreadsheet lama; impor CSV terbaru bila ingin melihatnya di aplikasi ini.</p><a class="button primary" href="https://t.me/fafa_money_bot" target="_blank" rel="noreferrer">Buka bot Telegram â†—</a></section></div><section class="panel info-block"><h2>Penyimpanan pribadi</h2><p>Catatan dan gambar nota aplikasi tersimpan di browser perangkat ini. Situs tidak mengirimkannya ke Gemini atau Google Sheets. Ekspor CSV sebagai cadangan; gambar nota tidak termasuk CSV. Membersihkan data situs atau pindah perangkat dapat menghilangkan akses ke catatan lokal.</p><div class="actions" style="margin-top:18px"><button class="button" data-action="export">${icon('download')} Ekspor catatan</button><button class="button" data-action="receipt">${icon('upload')} Simpan nota</button></div></section><section class="panel info-block"><h2>Gunakan seperti aplikasi</h2><p>Buka situs ini di ponsel, lalu pilih â€œTambahkan ke layar utamaâ€ dari menu browser jika tersedia. Akses Sites tetap mengikuti privasi akun Anda. Sinkronisasi antarperangkat belum tersedia.</p></section>`}
-function assistant(){return `<div class="chat-shell"><div class="chat-intro"><span class="brand-icon">f<span>â†—</span></span><h1>Mulai dari pertanyaan kecil.</h1><p>Saya bantu memahami angka, satu percakapan setiap kali.</p><span class="top-badge" style="margin-top:14px">Asisten lokal Â· memakai catatan perangkat ini</span></div><div class="suggestions">${[['â†—','Berapa pengeluaran bulan ini?'],['â—·','Kategori terbesar saya apa?'],['âœ§','Bagaimana saya bisa lebih hemat?']].map(([s,t])=>`<button class="suggestion" data-suggest="${e(t)}"><span>${s}</span>${t}</button>`).join('')}</div><div class="chat-messages" id="chatMessages">${messages.length?messages.map(m=>`<div class="bubble ${m.role==='user'?'user':''}">${e(m.text)}${m.draftId?`<button class="button" style="display:block;margin-top:12px" data-edit="${e(m.draftId)}">Periksa draf â†—</button>`:''}<small>${m.role==='user'?'Anda':'Finance Tracker Â· lokal'}</small></div>`).join(''):'<div class="bubble">Halo! Saya bisa merangkum catatan Anda dan menyiapkan draf dari teks transaksi. Coba â€œBeli makan Rp25.000 di warteg, tunaiâ€. Untuk percakapan Gemini dan pembacaan nota otomatis, gunakan bot Telegram.</div>'}</div><div class="chat-input-wrap"><form class="chat-input" id="chatForm"><label class="screen-reader" for="chatInput">Pesan untuk asisten</label><input id="chatInput" placeholder="Tanya catatan atau ceritakan transaksiâ€¦" maxlength="1000" autocomplete="off"><button aria-label="Kirim pesan">â†‘</button></form><p class="chat-footnote">Hitungan dari transaksi aktif. Jawaban lokal bukan analisis Gemini atau saldo rekening.</p></div></div>`}
-function render(){nav();$('#content').innerHTML=({dashboard,transactions,drafts,assistant,connections}[view]||dashboard)();bind();if(view==='assistant'&&messages.length)$('#chatMessages').lastElementChild?.scrollIntoView({block:'nearest'})}
-function go(v){view=labels[v]?v:'dashboard';location.hash=view;render();window.scrollTo(0,0)}
-function showModal(html){$('#modalContent').innerHTML=html;const d=$('#modal');if(!d.open)d.showModal();d.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>d.close())}
-function close(){ $('#modal').close() }
-function formModal(record={},receipt){const editing=!!record.id,draft=record.status==='draft';showModal(`<div class="modal-head"><div><h2>${editing?'Periksa transaksi':'Catat transaksi'}</h2><p>${draft?'Draf belum memengaruhi total keuangan.':'Setiap catatan membawa Anda lebih dekat pada gambaran utuh.'}</p></div><button class="close" data-close aria-label="Tutup">Ã—</button></div><form id="transactionForm"><div class="form-body">${receipt?.blob?`<img class="receipt-preview" id="formReceiptPreview" alt="Bukti transaksi yang diunggah">`:''}${record.reason?`<div class="notice">${e(record.reason)}</div>`:''}<div class="type-toggle">${['Pengeluaran','Pemasukan'].map(t=>`<label><input type="radio" name="type" value="${t}" ${(record.type||'Pengeluaran')===t?'checked':''}><span>${t==='Pengeluaran'?'â†—':'â†™'} ${t}</span></label>`).join('')}</div><div class="form-grid"><div class="field full"><label for="amount">Nominal (Rupiah)</label><input class="amount-input" id="amount" name="amount" placeholder="Rp0" inputmode="numeric" required value="${record.amount?record.amount.toLocaleString('id-ID'):''}"></div><div class="field"><label for="date">Tanggal transaksi</label><input id="date" name="date" type="date" required value="${e(record.date||today())}"></div><div class="field"><label for="category">Kategori</label><select id="category" name="category">${[...new Set([...CATEGORIES,record.category].filter(Boolean))].map(c=>`<option ${record.category===c?'selected':''}>${e(c)}</option>`).join('')}</select></div><div class="field full"><label for="merchant">Merchant / sumber dana</label><input id="merchant" name="merchant" placeholder="Contoh: Warteg Bu Tri atau Gaji" maxlength="200" required value="${e(record.merchant||'')}"></div><div class="field full"><label for="payment">Metode pembayaran</label><input id="payment" name="payment" placeholder="Tunai, QRIS, Bank BRIâ€¦" maxlength="100" value="${e(record.payment||'')}"></div><div class="field full"><label for="note">Keterangan <span class="small-label">(opsional)</span></label><textarea id="note" name="note" placeholder="Catatan kecil tentang transaksi ini" maxlength="500">${e(record.note||'')}</textarea></div></div><div class="form-error" id="formError" role="alert"></div></div><div class="modal-foot"><button class="button" type="button" data-close>Nanti dulu</button>${draft?'<button class="button" type="submit" name="mode" value="draft">Simpan koreksi draf</button>':''}<button class="button primary" type="submit" name="mode" value="active">${draft?'Setujui & simpan':'Simpan transaksi'}</button></div></form>`);let objectURL;if(receipt?.blob){objectURL=URL.createObjectURL(receipt.blob);$('#formReceiptPreview').src=objectURL;$('#modal').addEventListener('close',()=>URL.revokeObjectURL(objectURL),{once:true})}$('#transactionForm').onsubmit=async ev=>{ev.preventDefault();if(busy)return;const f=new FormData(ev.target);let t;try{t={...record,id:record.id||id(),type:f.get('type'),amount:amount(f.get('amount')),date:date(f.get('date')),merchant:String(f.get('merchant')).trim(),category:String(f.get('category')),payment:String(f.get('payment')||'Tidak diketahui').trim(),note:String(f.get('note')||'').trim(),status:ev.submitter?.value==='draft'?'draft':'active',createdAt:record.createdAt||Date.now(),updatedAt:Date.now(),source:record.source||'manual'};valid(t)}catch(err){$('#formError').textContent=err.message;return}const dup=duplicate(rows,t,t.id);if(dup&&t.status==='active'&&!record.duplicateApproved){t.status='draft';t.reason='Transaksi serupa sudah tercatat: '+dup.merchant+' pada '+fmtDate(dup.date)+'. Simpan hanya jika ini transaksi terpisah.';t.duplicateOf=dup.id}busy=true;try{await save(t,receipt);close();toast(t.status==='draft'?'Draf tersimpan. Periksa sebelum menyetujui.':'Transaksi berhasil dicatat.');}catch(err){$('#formError').textContent='Belum tersimpan: '+err.message}finally{busy=false}}}
-async function edit(id){const t=rows.find(t=>t.id===id);if(!t)return;if(t.status==='cancelled'){toast('Transaksi ini sudah dibatalkan.');return}let receipt;if(t.receiptId)receipt=await getReceipt(t.receiptId);formModal(t,receipt)}
-function confirmation(title,body,action,label='Ya, lanjutkan'){showModal(`<div class="modal-head"><h2>${e(title)}</h2><button class="close" data-close aria-label="Tutup">Ã—</button></div><div class="form-body"><p style="font-size:12px;line-height:1.9;color:#7c8f6c">${e(body)}</p><div class="form-error" id="confirmError"></div></div><div class="modal-foot"><button class="button" data-close>Kembali</button><button class="button primary" id="yesConfirm">${e(label)}</button></div>`);$('#yesConfirm').onclick=async()=>{if(busy)return;busy=true;$('#yesConfirm').disabled=true;try{await action();close()}catch(err){$('#confirmError').textContent=err.message;$('#yesConfirm').disabled=false}finally{busy=false}}}
-function cancel(id){const t=rows.find(t=>t.id===id);if(!t)return;confirmation('Batalkan transaksi?',`${money(t.amount)} di ${t.merchant} akan ditandai Dibatalkan dan dikeluarkan dari ringkasan. Riwayatnya tetap tersimpan.`,async()=>{await save({...t,status:'cancelled',updatedAt:Date.now()});toast('Transaksi dibatalkan.')},'Ya, batalkan')}
-function ignore(id){const t=rows.find(t=>t.id===id);if(!t)return;confirmation('Abaikan draf ini?',`Draf ${money(t.amount)} belum masuk ke total. Draf akan ditandai dibatalkan.`,async()=>{await save({...t,status:'cancelled',updatedAt:Date.now()});toast('Draf diabaikan.')},'Abaikan draf')}
-function confirmDraft(id){const t=rows.find(t=>t.id===id);if(!t||t.status!=='draft')return;try{valid(t)}catch{edit(id);toast('Lengkapi detail transaksi terlebih dahulu.');return}const dup=duplicate(rows,t,t.id);if(dup){confirmation('Transaksi ini memang berbeda?',`Ada transaksi serupa ${money(t.amount)} di ${t.merchant}, tanggal ${fmtDate(t.date)}. Simpan draf ini hanya jika ini transaksi terpisah.`,async()=>{await save({...t,status:'active',duplicateApproved:true,updatedAt:Date.now()});toast('Transaksi terpisah berhasil disimpan.')},'Ya, transaksi berbeda')}else confirmation('Simpan transaksi ini?',`${money(t.amount)} Â· ${t.merchant} Â· ${fmtDate(t.date)}. Setelah disimpan, transaksi masuk ke ringkasan.`,async()=>{await save({...t,status:'active',updatedAt:Date.now()});toast('Transaksi tersimpan.')},'Setujui & simpan')}
-async function getReceipt(id){return new Promise((res,rej)=>{const q=db.transaction('receipts').objectStore('receipts').get(id);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
-async function showReceipt(id){const r=await getReceipt(id);if(!r){toast('Gambar tidak ditemukan pada perangkat ini.');return}showModal(`<div class="modal-head"><h2>Bukti transaksi</h2><button class="close" data-close aria-label="Tutup">Ã—</button></div><div class="form-body"><img id="receiptFull" style="width:100%;max-height:65vh;object-fit:contain" alt="Bukti transaksi tersimpan di perangkat"></div>`);const url=URL.createObjectURL(r.blob);$('#receiptFull').src=url;$('#modal').addEventListener('close',()=>URL.revokeObjectURL(url),{once:true})}
-$('#receiptInput').onchange=async ev=>{const file=ev.target.files[0];ev.target.value='';if(!file)return;if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>8*1024*1024){toast('Gunakan JPG, PNG, atau WEBP maksimal 8 MB.');return}if(!db){toast('Penyimpanan perangkat belum tersedia.');return}const receiptId=id();const t={id:id(),date:today(),type:'Pengeluaran',amount:0,merchant:'',category:'Lain-lain',payment:'Tidak diketahui',note:'',source:'receipt',status:'draft',receiptId,createdAt:Date.now(),reason:'Gambar disimpan di perangkat. Pembacaan AI belum terhubung di aplikasi ini; isi detail di bawah atau analisis nota melalui bot Telegram.'};try{await save(t,{id:receiptId,blob:file,name:file.name});formModal(t,{id:receiptId,blob:file,name:file.name})}catch(err){toast('Nota belum tersimpan: '+err.message)}};
-$('#csvInput').onchange=async ev=>{const file=ev.target.files[0];ev.target.value='';if(!file)return;if(file.size>5*1024*1024){toast('Impor CSV maksimal 5 MB.');return}try{const parsed=importRows(await file.text()),errors=parsed.filter(r=>r.error),validRows=parsed.filter(r=>r.transaction),known=new Set(rows.filter(r=>r.source==='import'&&r.originalId).map(r=>r.originalId));let exact=0;const prepared=[];for(const{transaction:t}of validRows){if(t.originalId&&known.has(t.originalId)){exact++;continue}const item={...t,id:id(),createdAt:Date.now()+prepared.length,updatedAt:Date.now()};if(t.originalId)known.add(t.originalId);const dup=duplicate([...rows,...prepared],item,item.id);if(dup&&item.status==='active'){item.status='draft';item.reason='Transaksi serupa sudah tercatat. Periksa sebelum menyimpan.';item.duplicateOf=dup.id}prepared.push(item)}showModal(`<div class="modal-head"><h2>Periksa impor CSV</h2><button class="close" data-close aria-label="Tutup">Ã—</button></div><div class="form-body"><div class="notice">${prepared.length} baris siap diimpor Â· ${exact} ID impor yang sama dilewati Â· ${errors.length} baris tidak valid.<br>${prepared.filter(t=>t.status==='draft').length} draf belum masuk total keuangan.</div><div class="import-preview"><table style="width:100%">${prepared.slice(0,12).map(t=>`<tr><td>${e(t.merchant)}</td><td>${money(t.amount)}</td><td>${t.status==='draft'?'Draf':t.status==='cancelled'?'Dibatalkan':'Aktif'}</td></tr>`).join('')}</table>${errors.length?`<p class="form-error">${errors.slice(0,5).map(r=>'Baris '+r.line+': '+e(r.error)).join('<br>')}</p>`:''}</div><div id="importError" class="form-error"></div></div><div class="modal-foot"><button class="button" data-close>Batal</button><button class="button primary" id="importConfirm" ${!prepared.length?'disabled':''}>Impor ${prepared.length} transaksi</button></div>`);$('#importConfirm').onclick=async()=>{if(busy)return;busy=true;$('#importConfirm').disabled=true;try{await new Promise((res,rej)=>{const tx=db.transaction('transactions','readwrite');prepared.forEach(t=>tx.objectStore('transactions').put(t));tx.oncomplete=res;tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error)});rows=await readAll();render();close();toast(prepared.length+' catatan berhasil diimpor.')}catch(err){$('#importError').textContent='Impor belum tersimpan: '+err.message;$('#importConfirm').disabled=false}finally{busy=false}}}catch(err){toast(err.message)}};
-function exportData(){if(!rows.length){toast('Belum ada catatan untuk diekspor.');return}const blob=new Blob([csvExport(rows)],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='Finance-Tracker-'+today()+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('CSV diunduh. Simpan sebagai cadangan catatan.')}
-async function chat(text){text=text.trim();if(!text||text.length>1000)return;messages.push({role:'user',text});let answer='',draftId;const t=chatDraft(text);if(t){draftId=id();const d=duplicate(rows,t);try{await save({...t,id:draftId,createdAt:Date.now(),reason:d?'Transaksi serupa sudah tercatat. Periksa apakah transaksi ini berbeda.':t.reason});answer='Saya menyiapkan draf '+money(t.amount)+'. Periksa detailnya sebelum menyimpan. Draf belum memengaruhi total keuangan.'}catch(err){answer='Draf belum tersimpan: '+err.message;draftId=null}}else if(/^(halo|hai|hi|pagi|menu|bantuan)[.! ]*$/i.test(text)){answer='Halo! Mau mencatat transaksi atau melihat ringkasan? Anda bisa bertanya tentang pengeluaran bulan ini, kategori terbesar, atau mengunggah nota untuk diperiksa.'}else if(/berapa|pengeluaran|pemasukan|kategori|hemat|ringkasan|laporan|saldo|kondisi/i.test(text)){if(/\b(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember|20\d{2})\b/i.test(text)){answer='Saat ini saya mendukung hari ini, bulan ini, bulan lalu, dan semua catatan. Periode mana yang ingin Anda lihat?'}else{const code=/bulan lalu/i.test(text)?'previous':/hari ini/i.test(text)?'today':/semua|seluruh/i.test(text)?'all':'month';let category='';if(/makan|minum/i.test(text))category=rows.find(t=>/makan|minum/i.test(t.category))?.category||'Makanan & Minuman';const a=aggregate(rows,code,category);answer=`${a.period.label}${category?' Â· '+category:''}\n\nPemasukan: ${money(a.income)}\nPengeluaran: ${money(a.expense)}\nSelisih tercatat: ${a.net<0?'âˆ’':''}${money(Math.abs(a.net))}\n${a.count} transaksi aktif.`;if(a.categories.length)answer+='\n\nKategori terbesar: '+a.categories[0][0]+' ('+money(a.categories[0][1])+').';if(/hemat|kondisi/i.test(text))answer+=a.count?'\n\nMulai dengan meninjau kategori terbesar dan pisahkan kebutuhan dari belanja yang bisa ditunda. Berapa batas belanja yang ingin Anda jadikan acuan?':'\n\nCatat beberapa transaksi rutin dahulu agar pembahasan lebih sesuai keadaan Anda.';answer+='\n\nIni selisih catatan, bukan saldo rekening.'}}else if(/terima kasih|makasih|thanks/i.test(text)){answer='Sama-sama. Saya siap membantu saat Anda ingin mencatat atau meninjau catatan.'}else answer='Saya bekerja dalam mode lokal. Coba â€œPengeluaran bulan ini berapa?â€ atau â€œBeli makan Rp25.000 di warteg, tunaiâ€. Percakapan Gemini dan pembacaan nota otomatis tersedia lewat bot Telegram; hasilnya perlu diimpor dari spreadsheet.';messages.push({role:'assistant',text:answer,draftId});if(messages.length>60)messages=messages.slice(-60);view='assistant';render()}
-function bind(){document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>go(b.dataset.view));document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>{const a=b.dataset.action;if(a==='new')formModal();if(a==='receipt')$('#receiptInput').click();if(a==='import')$('#csvInput').click();if(a==='export')exportData()});document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>edit(b.dataset.edit).catch(err=>toast(err.message)));document.querySelectorAll('[data-cancel]').forEach(b=>b.onclick=()=>cancel(b.dataset.cancel));document.querySelectorAll('[data-ignore]').forEach(b=>b.onclick=()=>ignore(b.dataset.ignore));document.querySelectorAll('[data-confirm]').forEach(b=>b.onclick=()=>confirmDraft(b.dataset.confirm));document.querySelectorAll('[data-receipt]').forEach(b=>b.onclick=()=>showReceipt(b.dataset.receipt).catch(err=>toast(err.message)));document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;page=1;render()});document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{page=Number(b.dataset.page);render()});document.querySelectorAll('[data-suggest]').forEach(b=>b.onclick=()=>chat(b.dataset.suggest));$('#periodSelect')?.addEventListener('change',ev=>{period=ev.target.value;render()});$('#search')?.addEventListener('input',ev=>{query=ev.target.value;page=1;const pos=ev.target.selectionStart;render();$('#search').focus();$('#search').setSelectionRange(pos,pos)});$('#typeFilter')?.addEventListener('change',ev=>{typeFilter=ev.target.value;page=1;render()});$('#categoryFilter')?.addEventListener('change',ev=>{categoryFilter=ev.target.value;page=1;render()});$('#chatForm')?.addEventListener('submit',ev=>{ev.preventDefault();chat($('#chatInput').value).catch(err=>toast(err.message))})}
-$('#mobileAdd').onclick=()=>formModal();$('#helpBtn').onclick=()=>go('connections');$('#modal').addEventListener('click',ev=>{if(ev.target===$('#modal')){const r=ev.target.getBoundingClientRect();if(ev.clientX<r.left||ev.clientX>r.right||ev.clientY<r.top||ev.clientY>r.bottom)close()}});window.addEventListener('hashchange',()=>{const v=location.hash.slice(1);if(labels[v]&&v!==view){view=v;render()}});
-try{db=await initDB();rows=await readAll()}catch(err){toast(err.message)}view=labels[location.hash.slice(1)]?location.hash.slice(1):'dashboard';render();
+import {
+  CATEGORIES,
+  money,
+  today,
+  escape as esc,
+  amount as parseAmount,
+  date as parseDate,
+  valid,
+  aggregate,
+  csvExport,
+  importRows,
+  chatDraft,
+  parseText
+} from './core.mjs';
 
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+// Kategori icon mapping
+const CAT_ICONS = {
+  'Makanan & Minuman': '🍔',
+  'Belanja': '🛍️',
+  'Transportasi': '🚗',
+  'Kebutuhan Pokok': '🛒',
+  'Tagihan': '⚡',
+  'Kesehatan': '💊',
+  'Pendidikan': '📚',
+  'Hiburan': '🎬',
+  'Gaji': '💰',
+  'Usaha': '💼',
+  'Transfer': '🔄',
+  'Lain-lain': '🏷️'
+};
+
+const PAY_METHODS = ['QRIS', 'BCA', 'BRI', 'Mandiri', 'BNI', 'BSI', 'GoPay', 'OVO', 'DANA', 'ShopeePay', 'Tunai', 'Lainnya'];
+
+// State
+let db = null;
+let transactions = [];
+let currentTab = 'ringkasan';
+let currentPeriod = 'month';
+let selectedCategory = '';
+let searchQuery = '';
+let editingTx = null;
+
+// Helper ID & Toast
+const uuid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+
+function showToast(msg) {
+  const t = $('#toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => t.classList.remove('on'), 3500);
+}
+
+// IndexedDB Initialization
+async function initDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('finance-tracker-v2', 1);
+    req.onupgradeneeded = ev => {
+      const d = ev.target.result;
+      if (!d.objectStoreNames.contains('transactions')) {
+        const store = d.createObjectStore('transactions', { keyPath: 'id' });
+        store.createIndex('date', 'date', { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function loadTransactions() {
+  if (!db) return [];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('transactions', 'readonly');
+    const store = tx.objectStore('transactions');
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveTransaction(t) {
+  if (!db) return;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('transactions', 'readwrite');
+    const store = tx.objectStore('transactions');
+    store.put(t);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function deleteTransaction(id) {
+  if (!db) return;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('transactions', 'readwrite');
+    const store = tx.objectStore('transactions');
+    store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function formatDateIndo(dStr) {
+  try {
+    const d = new Date(dStr + 'T12:00:00Z');
+    return new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+  } catch {
+    return dStr;
+  }
+}
+
+// -------------------------------------------------------------
+// RENDER NAVIGATION
+// -------------------------------------------------------------
+function renderNav() {
+  const nav = $('#nav');
+  if (!nav) return;
+
+  nav.innerHTML = `
+    <span class="brand">finance<span style="color:var(--g)">tracker.</span></span>
+    
+    <button class="t ${currentTab === 'ringkasan' ? 'on' : ''}" data-tab="ringkasan">
+      <span>📊</span>
+      Ringkasan
+    </button>
+    
+    <button class="t ${currentTab === 'transaksi' ? 'on' : ''}" data-tab="transaksi">
+      <span>💳</span>
+      Transaksi
+    </button>
+    
+    <button class="fab" id="fabAdd" aria-label="Tambah Transaksi">
+      <i>+</i>
+      <b>+ Catat</b>
+    </button>
+    
+    <button class="t ${currentTab === 'nota' ? 'on' : ''}" data-tab="nota">
+      <span>🧾</span>
+      Pindai Nota
+    </button>
+    
+    <button class="t ${currentTab === 'data' ? 'on' : ''}" data-tab="data">
+      <span>⚙️</span>
+      Kelola Data
+    </button>
+  `;
+
+  nav.querySelectorAll('.t').forEach(b => {
+    b.onclick = () => {
+      currentTab = b.dataset.tab;
+      render();
+    };
+  });
+
+  const fab = $('#fabAdd');
+  if (fab) fab.onclick = () => openTxModal();
+}
+
+// -------------------------------------------------------------
+// MAIN VIEWS
+// -------------------------------------------------------------
+function render() {
+  renderNav();
+  const view = $('#view');
+  if (!view) return;
+
+  switch (currentTab) {
+    case 'ringkasan':
+      view.innerHTML = renderDashboard();
+      break;
+    case 'transaksi':
+      view.innerHTML = renderTransactions();
+      break;
+    case 'nota':
+      view.innerHTML = renderReceiptScanner();
+      break;
+    case 'data':
+      view.innerHTML = renderDataTools();
+      break;
+    default:
+      view.innerHTML = renderDashboard();
+  }
+
+  attachViewListeners();
+}
+
+// 1. Dashboard View
+function renderDashboard() {
+  const agg = aggregate(transactions, currentPeriod);
+  const recent = [...transactions].sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 5);
+
+  let categoryBars = '';
+  if (agg.categories.length) {
+    const totalExp = agg.expense || 1;
+    categoryBars = agg.categories.slice(0, 4).map(([cat, amt]) => {
+      const pct = Math.min(100, Math.round((amt / totalExp) * 100));
+      return `
+        <div class="bar">
+          <div><span>${esc(cat)}</span><b>${money(amt)} (${pct}%)</b></div>
+          <i><b style="width: ${pct}%"></b></i>
+        </div>
+      `;
+    }).join('');
+  } else {
+    categoryBars = `<p class="muted" style="margin: 8px 0;">Belum ada pengeluaran pada periode ini.</p>`;
+  }
+
+  let txList = '';
+  if (recent.length) {
+    txList = recent.map(t => renderTxItem(t)).join('');
+  } else {
+    txList = `
+      <div class="empty">
+        <div style="font-size: 32px;">🌱</div>
+        <b>Mulai catat transaksi pertama Anda</b>
+        <small>Klik tombol <strong>+ Catat</strong> di bawah atau pindai nota.</small>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="hd">
+      <div>
+        <h1>Ringkasan Keuangan</h1>
+        <small class="muted">Catat uang, tenang hati · Ruang pribadi offline</small>
+      </div>
+      <div>
+        <select id="periodFilter" style="width: auto; padding: 6px 12px; margin: 0; font-size: 13px; font-weight: 600;">
+          <option value="month" ${currentPeriod === 'month' ? 'selected' : ''}>Bulan ini</option>
+          <option value="today" ${currentPeriod === 'today' ? 'selected' : ''}>Hari ini</option>
+          <option value="previous" ${currentPeriod === 'previous' ? 'selected' : ''}>Bulan lalu</option>
+          <option value="all" ${currentPeriod === 'all' ? 'selected' : ''}>Semua waktu</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Hero Card -->
+    <div class="hero">
+      <span>Selisih Tercatat (${agg.period.label})</span>
+      <strong>${agg.net < 0 ? '−' : ''}${money(Math.abs(agg.net))}</strong>
+      <div class="duo">
+        <div>
+          <small>Total Pemasukan</small>
+          <b>${money(agg.income)}</b>
+          <i>↗</i>
+        </div>
+        <div>
+          <small>Total Pengeluaran</small>
+          <b>${money(agg.expense)}</b>
+          <i>↘</i>
+        </div>
+      </div>
+    </div>
+
+    <!-- Category Breakdown Card -->
+    <div class="card">
+      <div class="row-h">
+        <h2>Kategori Terbesar</h2>
+        <a class="lnk" href="#transaksi" id="btnSeeAllCat">Lihat Semua ↗</a>
+      </div>
+      ${categoryBars}
+    </div>
+
+    <!-- Recent Transactions -->
+    <div class="card">
+      <div class="row-h">
+        <h2>Transaksi Terbaru</h2>
+        <a class="lnk" href="#transaksi" id="btnSeeAllTx">Buka Catatan ↗</a>
+      </div>
+      <div>
+        ${txList}
+      </div>
+    </div>
+  `;
+}
+
+// 2. Transactions List View
+function renderTransactions() {
+  let list = [...transactions];
+
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    list = list.filter(t => 
+      (t.merchant || '').toLowerCase().includes(q) ||
+      (t.category || '').toLowerCase().includes(q) ||
+      (t.note || '').toLowerCase().includes(q) ||
+      (t.payment || '').toLowerCase().includes(q)
+    );
+  }
+
+  if (selectedCategory) {
+    list = list.filter(t => t.category === selectedCategory);
+  }
+
+  list.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
+
+  // Category chips
+  const chipsHtml = `
+    <div class="chips" style="overflow-x: auto; padding-bottom: 8px; margin-bottom: 12px;">
+      <button class="chip ${!selectedCategory ? 'on' : ''}" data-cat="">Semua</button>
+      ${CATEGORIES.map(c => `
+        <button class="chip ${selectedCategory === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>
+      `).join('')}
+    </div>
+  `;
+
+  let content = '';
+  if (!list.length) {
+    content = `
+      <div class="card">
+        <div class="empty">
+          <div style="font-size: 32px;">🔍</div>
+          <b>Tidak ada transaksi ditemukan</b>
+          <small>Coba ganti kata kunci pencarian atau kategori filter.</small>
+        </div>
+      </div>
+    `;
+  } else {
+    // Group by date
+    let lastDate = '';
+    let items = '';
+    list.forEach(t => {
+      if (t.date !== lastDate) {
+        lastDate = t.date;
+        items += `<div class="day">${formatDateIndo(t.date)}</div>`;
+      }
+      items += renderTxItem(t);
+    });
+
+    content = `
+      <div class="card" style="padding-top: 8px;">
+        ${items}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="hd">
+      <div>
+        <h1>Daftar Transaksi</h1>
+        <small class="muted">${list.length} catatan transaksi tersimpan</small>
+      </div>
+      <div>
+        <button class="btn pri" id="btnNewTx">+ Catat Baru</button>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 12px;">
+      <input type="search" id="txSearch" placeholder="Cari toko, merchant, atau catatan..." value="${esc(searchQuery)}">
+    </div>
+
+    ${chipsHtml}
+    ${content}
+  `;
+}
+
+function renderTxItem(t) {
+  const isIncome = t.type === 'Pemasukan';
+  const icon = CAT_ICONS[t.category] || '🏷️';
+  return `
+    <button class="tx" data-txid="${esc(t.id)}">
+      <span class="ico">${icon}</span>
+      <span class="tm">
+        <b>${esc(t.merchant || 'Tanpa Nama')}</b>
+        <small>${esc(t.category)} · ${esc(t.payment || 'Tunai')}${t.note ? ' · ' + esc(t.note) : ''}</small>
+      </span>
+      <span class="amt ${isIncome ? 'in' : ''}">${isIncome ? '+' : '−'}${money(t.amount)}</span>
+    </button>
+  `;
+}
+
+// 3. Receipt Scanner & AI Parser View
+function renderReceiptScanner() {
+  return `
+    <div class="hd">
+      <div>
+        <h1>Pindai & Ekstrak Nota</h1>
+        <small class="muted">Salin teks bukti transfer atau upload nota belanja Anda</small>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Ekstraksi Cepat dari Teks</h2>
+      <p class="muted" style="margin-bottom: 12px;">Ketik pengeluaran santai, format struk m-Banking, atau QRIS:</p>
+      <textarea id="quickTextInput" rows="4" placeholder="Contoh teks:&#10;Beli bensin 35000 di pertamina, QRIS&#10;atau paste teks bukti transfer BRI / BCA / Mandiri..."></textarea>
+      <button class="btn pri wide" id="btnParseText">⚡ Ekstrak Menjadi Transaksi</button>
+    </div>
+
+    <div class="card">
+      <h2>Upload Foto Bukti Transaksi</h2>
+      <label class="drop" for="receiptFile">
+        <span class="big">📸</span>
+        <b>Pilih Foto Struk / Screenshot Bukti Transfer</b>
+        <small>Pilih gambar nota dari galeri HP atau kamera MacBook Anda.</small>
+      </label>
+      <input type="file" id="receiptFile" accept="image/*" style="display:none">
+    </div>
+
+    <div class="note">
+      💡 <b>Tips Integrasi Otomatis:</b> Jika Anda ingin foto nota langsung dibaca otomatis lewat kecerdasan buatan Gemini AI dari iPhone tanpa membuka web, gunakan <b>Bot Telegram Pribadi</b> yang telah disiapkan!
+    </div>
+  `;
+}
+
+// 4. Data Tools (Import/Export/Reset)
+function renderDataTools() {
+  return `
+    <div class="hd">
+      <div>
+        <h1>Kelola & Ekspor Data</h1>
+        <small class="muted">Cadangkan atau pindahkan data transaksi Anda kapan saja</small>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Cadangkan Data (CSV)</h2>
+      <p class="muted" style="margin-bottom: 14px;">Ekspor seluruh transaksi ke file spreadsheet CSV untuk dibuka di Google Sheets atau Microsoft Excel.</p>
+      <button class="btn pri" id="btnExportCsv">📥 Unduh File CSV</button>
+    </div>
+
+    <div class="card">
+      <h2>Impor Data Spreadsheet</h2>
+      <p class="muted" style="margin-bottom: 14px;">Masukkan catatan dari file CSV yang sudah ada ke aplikasi ini.</p>
+      <input type="file" id="importCsvInput" accept=".csv,text/csv" style="display:none">
+      <button class="btn ghost" id="btnTriggerImport">📤 Pilih File CSV untuk Diimpor</button>
+    </div>
+
+    <div class="card" style="border: 1px solid var(--red);">
+      <h2 style="color: var(--red);">Hapus Semua Data</h2>
+      <p class="muted" style="margin-bottom: 14px;">Data tersimpan secara offline di browser Anda. Tindakan ini akan mengosongkan seluruh database transaksi.</p>
+      <button class="btn danger" id="btnResetData">🗑️ Kosongkan Database</button>
+    </div>
+  `;
+}
+
+// -------------------------------------------------------------
+// EVENT LISTENERS & MODALS
+// -------------------------------------------------------------
+function attachViewListeners() {
+  // Period filter
+  const pFilter = $('#periodFilter');
+  if (pFilter) {
+    pFilter.onchange = ev => {
+      currentPeriod = ev.target.value;
+      render();
+    };
+  }
+
+  // Links on dashboard
+  const btnAllTx = $('#btnSeeAllTx');
+  if (btnAllTx) btnAllTx.onclick = () => { currentTab = 'transaksi'; render(); };
+  const btnAllCat = $('#btnSeeAllCat');
+  if (btnAllCat) btnAllCat.onclick = () => { currentTab = 'transaksi'; render(); };
+
+  // New Tx buttons
+  const btnNew = $('#btnNewTx');
+  if (btnNew) btnNew.onclick = () => openTxModal();
+
+  // Search & chips
+  const sInput = $('#txSearch');
+  if (sInput) {
+    sInput.oninput = ev => {
+      searchQuery = ev.target.value;
+      render();
+      const el = $('#txSearch');
+      if (el) el.focus();
+    };
+  }
+
+  $$('.chip').forEach(c => {
+    c.onclick = () => {
+      selectedCategory = c.dataset.cat || '';
+      render();
+    };
+  });
+
+  // Transaction item click (Edit)
+  $$('.tx').forEach(b => {
+    b.onclick = () => {
+      const id = b.dataset.txid;
+      const t = transactions.find(x => x.id === id);
+      if (t) openTxModal(t);
+    };
+  });
+
+  // Receipt Scanner View Listeners
+  const btnParse = $('#btnParseText');
+  if (btnParse) {
+    btnParse.onclick = () => {
+      const raw = $('#quickTextInput')?.value || '';
+      if (!raw.trim()) {
+        showToast('Ketik atau paste teks transaksi terlebih dahulu.');
+        return;
+      }
+      
+      // Try chat draft or parseText
+      let draft = chatDraft(raw);
+      if (!draft || !draft.amount) {
+        draft = parseText(raw);
+      }
+
+      if (draft && draft.amount) {
+        openTxModal({
+          id: uuid(),
+          type: draft.type || 'Pengeluaran',
+          amount: draft.amount,
+          merchant: draft.merchant || 'Hasil Ekstraksi',
+          category: draft.category || 'Lain-lain',
+          date: draft.date || today(),
+          payment: draft.payment || 'QRIS',
+          note: draft.note || raw.slice(0, 80)
+        });
+        showToast('✅ Berhasil diekstrak! Silakan periksa detailnya.');
+      } else {
+        showToast('⚠️ Nominal tidak terdeteksi. Silakan isi form manual.');
+        openTxModal({
+          id: uuid(),
+          type: 'Pengeluaran',
+          amount: 0,
+          merchant: '',
+          category: 'Makanan & Minuman',
+          date: today(),
+          payment: 'QRIS',
+          note: raw.slice(0, 100)
+        });
+      }
+    };
+  }
+
+  const receiptFileInput = $('#receiptFile');
+  if (receiptFileInput) {
+    receiptFileInput.onchange = ev => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      openTxModal({
+        id: uuid(),
+        type: 'Pengeluaran',
+        amount: 0,
+        merchant: file.name.replace(/\.[^/.]+$/, ""),
+        category: 'Belanja',
+        date: today(),
+        payment: 'QRIS',
+        note: 'Nota: ' + file.name
+      });
+      showToast('📸 Foto diterima! Masukkan nominal transaksi.');
+    };
+  }
+
+  // Data Tools Listeners
+  const btnExport = $('#btnExportCsv');
+  if (btnExport) {
+    btnExport.onclick = () => {
+      if (!transactions.length) {
+        showToast('Belum ada transaksi untuk diekspor.');
+        return;
+      }
+      const csv = csvExport(transactions);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `finance-tracker-${today()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('📥 Berhasil mengunduh catatan CSV!');
+    };
+  }
+
+  const btnTrigImp = $('#btnTriggerImport');
+  const impCsvInput = $('#importCsvInput');
+  if (btnTrigImp && impCsvInput) {
+    btnTrigImp.onclick = () => impCsvInput.click();
+    impCsvInput.onchange = async ev => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = importRows(text);
+        const validItems = parsed.filter(p => p.transaction).map(p => ({
+          ...p.transaction,
+          id: uuid(),
+          createdAt: Date.now()
+        }));
+
+        if (!validItems.length) {
+          showToast('Tidak ada transaksi valid dalam file CSV.');
+          return;
+        }
+
+        for (const item of validItems) {
+          await saveTransaction(item);
+        }
+
+        transactions = await loadTransactions();
+        render();
+        showToast(`✅ Berhasil mengimpor ${validItems.length} transaksi!`);
+      } catch (err) {
+        showToast('Gagal membaca CSV: ' + err.message);
+      }
+      ev.target.value = '';
+    };
+  }
+
+  const btnReset = $('#btnResetData');
+  if (btnReset) {
+    btnReset.onclick = async () => {
+      if (confirm('Yakin ingin menghapus seluruh data transaksi dari perangkat ini?')) {
+        for (const t of transactions) {
+          await deleteTransaction(t.id);
+        }
+        transactions = [];
+        render();
+        showToast('Database berhasil dikosongkan.');
+      }
+    };
+  }
+}
+
+// -------------------------------------------------------------
+// TRANSACTION FORM DIALOG (#dlg)
+// -------------------------------------------------------------
+function openTxModal(tx = null) {
+  const dlg = $('#dlg');
+  if (!dlg) return;
+
+  editingTx = tx ? { ...tx } : {
+    id: uuid(),
+    type: 'Pengeluaran',
+    amount: 0,
+    merchant: '',
+    category: 'Makanan & Minuman',
+    date: today(),
+    payment: 'QRIS',
+    note: '',
+    createdAt: Date.now()
+  };
+
+  const isEdit = !!tx;
+
+  dlg.innerHTML = `
+    <div class="mh">
+      <h2>${isEdit ? 'Ubah Catatan' : 'Catat Transaksi'}</h2>
+      <button class="x" id="closeDlg" aria-label="Tutup">✕</button>
+    </div>
+
+    <!-- Segmented Type -->
+    <div class="seg" style="margin-bottom: 14px;">
+      <label>
+        <input type="radio" name="modalType" value="Pengeluaran" ${editingTx.type === 'Pengeluaran' ? 'checked' : ''}>
+        <span>Pengeluaran</span>
+      </label>
+      <label>
+        <input type="radio" name="modalType" value="Pemasukan" ${editingTx.type === 'Pemasukan' ? 'checked' : ''}>
+        <span>Pemasukan</span>
+      </label>
+    </div>
+
+    <!-- Big Amount Input -->
+    <div>
+      <label>Nominal (Rp)</label>
+      <input type="text" id="dlgAmount" class="big-in" placeholder="0" value="${editingTx.amount ? editingTx.amount.toLocaleString('id-ID') : ''}">
+    </div>
+
+    <!-- Merchant / Source -->
+    <div>
+      <label>Nama Toko / Sumber / Pihak</label>
+      <input type="text" id="dlgMerchant" placeholder="Misal: Indomaret, Kopi Kenangan, Transfer Gaji" value="${esc(editingTx.merchant)}">
+    </div>
+
+    <!-- Category & Date -->
+    <div class="two">
+      <div>
+        <label>Kategori</label>
+        <select id="dlgCategory">
+          ${CATEGORIES.map(c => `
+            <option value="${esc(c)}" ${editingTx.category === c ? 'selected' : ''}>${esc(c)}</option>
+          `).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Tanggal</label>
+        <input type="date" id="dlgDate" value="${esc(editingTx.date || today())}">
+      </div>
+    </div>
+
+    <!-- Payment & Note -->
+    <div class="two">
+      <div>
+        <label>Metode Pembayaran</label>
+        <select id="dlgPayment">
+          ${PAY_METHODS.map(p => `
+            <option value="${esc(p)}" ${editingTx.payment === p ? 'selected' : ''}>${esc(p)}</option>
+          `).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Catatan Tambahan</label>
+        <input type="text" id="dlgNote" placeholder="Rincian singkat barang" value="${esc(editingTx.note || '')}">
+      </div>
+    </div>
+
+    <div id="dlgErr" class="err" style="display: none;"></div>
+
+    <div class="mf">
+      ${isEdit ? `<button class="btn danger" id="dlgDelete" style="margin-right: auto;">Hapus</button>` : ''}
+      <button class="btn ghost" id="dlgCancel">Batal</button>
+      <button class="btn pri" id="dlgSave">Simpan</button>
+    </div>
+  `;
+
+  // Attach dialog listeners
+  $('#closeDlg').onclick = () => dlg.close();
+  $('#dlgCancel').onclick = () => dlg.close();
+
+  if ($('#dlgDelete')) {
+    $('#dlgDelete').onclick = async () => {
+      if (confirm('Hapus transaksi ini?')) {
+        await deleteTransaction(editingTx.id);
+        transactions = transactions.filter(t => t.id !== editingTx.id);
+        dlg.close();
+        render();
+        showToast('Transaksi dihapus.');
+      }
+    };
+  }
+
+  // Format amount input as user types
+  const amtInput = $('#dlgAmount');
+  amtInput.oninput = () => {
+    let raw = amtInput.value.replace(/[^0-9]/g, '');
+    if (raw) {
+      amtInput.value = Number(raw).toLocaleString('id-ID');
+    }
+  };
+
+  $('#dlgSave').onclick = async () => {
+    const errBox = $('#dlgErr');
+    errBox.style.display = 'none';
+
+    try {
+      const type = dlg.querySelector('input[name="modalType"]:checked')?.value || 'Pengeluaran';
+      const rawAmt = amtInput.value.trim();
+      const numAmt = parseAmount(rawAmt || '0');
+      const merchant = $('#dlgMerchant').value.trim();
+      const category = $('#dlgCategory').value;
+      const dateVal = parseDate($('#dlgDate').value || today());
+      const payment = $('#dlgPayment').value;
+      const note = $('#dlgNote').value.trim();
+
+      const record = {
+        ...editingTx,
+        type,
+        amount: numAmt,
+        merchant,
+        category,
+        date: dateVal,
+        payment,
+        note,
+        updatedAt: Date.now()
+      };
+
+      valid(record);
+
+      await saveTransaction(record);
+
+      // Update state
+      const idx = transactions.findIndex(t => t.id === record.id);
+      if (idx >= 0) {
+        transactions[idx] = record;
+      } else {
+        transactions.unshift(record);
+      }
+
+      dlg.close();
+      render();
+      showToast('✅ Catatan transaksi berhasil disimpan!');
+    } catch (e) {
+      errBox.textContent = e.message;
+      errBox.style.display = 'block';
+    }
+  };
+
+  dlg.showModal();
+}
+
+// -------------------------------------------------------------
+// SEED DEFAULT TRANSACTIONS IF FRESH (Demo preview)
+// -------------------------------------------------------------
+async function seedDefaultDataIfEmpty() {
+  if (transactions.length > 0) return;
+
+  const t = today();
+  const samples = [
+    { id: uuid(), type: 'Pemasukan', amount: 8500000, merchant: 'Gaji Bulanan', category: 'Gaji', date: t, payment: 'BCA', note: 'Gaji pokok', createdAt: Date.now() - 3000 },
+    { id: uuid(), type: 'Pengeluaran', amount: 550130, merchant: 'Shopee / BRIVA', category: 'Belanja', date: t, payment: 'BRI', note: 'Pembayaran tagihan Shopee', createdAt: Date.now() - 2000 },
+    { id: uuid(), type: 'Pengeluaran', amount: 35000, merchant: 'Kopi Kenangan', category: 'Makanan & Minuman', date: t, payment: 'QRIS', note: 'Es kopi kenangan mantan', createdAt: Date.now() - 1000 }
+  ];
+
+  for (const s of samples) {
+    await saveTransaction(s);
+  }
+  transactions = await loadTransactions();
+}
+
+// -------------------------------------------------------------
+// BOOTSTRAP APP
+// -------------------------------------------------------------
+async function init() {
+  try {
+    db = await initDB();
+    transactions = await loadTransactions();
+    await seedDefaultDataIfEmpty();
+  } catch (err) {
+    console.error('Failed to init local database:', err);
+  }
+  render();
+}
+
+init();
