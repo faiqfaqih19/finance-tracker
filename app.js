@@ -1,22 +1,144 @@
-import {
-  CATEGORIES,
-  money,
-  today,
-  escape as esc,
-  amount as parseAmount,
-  date as parseDate,
-  valid,
-  aggregate,
-  csvExport,
-  importRows,
-  chatDraft,
-  parseText
-} from './core.mjs';
+/**
+ * Finance Tracker — catat uang, tenang hati
+ * Standalone application bundle (no external ES module dependencies)
+ */
 
+// ==========================================
+// 1. CORE UTILITIES & LOGIC (BUNDLED)
+// ==========================================
+const CATEGORIES = ['Makanan & Minuman','Belanja','Transportasi','Kebutuhan Pokok','Tagihan','Kesehatan','Pendidikan','Hiburan','Gaji','Usaha','Lain-lain'];
+const money = n => 'Rp' + Number(n||0).toLocaleString('id-ID');
+const today = () => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+const normalize = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function parseAmount(v){
+  let s=String(v??'').trim().toLowerCase().replace(/^rp\s*/,'').replace(/\s/g,'');
+  let mult=1;
+  if(/(rb|ribu|k)$/.test(s)){mult=1000;s=s.replace(/(rb|ribu|k)$/,'');}
+  else if(/(jt|juta)$/.test(s)){mult=1000000;s=s.replace(/(jt|juta)$/,'');}
+  if(/^\d{1,3}(\.\d{3})+$/.test(s))s=s.replace(/\./g,'');
+  else if(mult>1&&/^\d+[.,]\d+$/.test(s))s=s.replace(',','.');
+  if(!/^\d+(\.\d+)?$/.test(s))throw Error('Nominal belum valid. Gunakan angka seperti 25000 atau 25.000.');
+  const n=Number(s)*mult;
+  if(!Number.isSafeInteger(n)||n<=0||n>1000000000000000)throw Error('Nominal harus angka Rupiah bulat positif.');
+  return n;
+}
+
+function parseDate(v){
+  let s=String(v||'').trim();
+  let m=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+  if(m)s=m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s)||isNaN(Date.parse(s+'T12:00:00Z'))||new Date(s+'T12:00:00Z').toISOString().slice(0,10)!==s)throw Error('Tanggal tidak valid.');
+  return s;
+}
+
+function valid(t){
+  parseDate(t.date);
+  if(!['Pemasukan','Pengeluaran'].includes(t.type))throw Error('Pilih jenis transaksi.');
+  if(!Number.isSafeInteger(t.amount)||t.amount<=0)throw Error('Nominal harus angka bulat positif.');
+  if(!String(t.merchant||'').trim())throw Error('Isi nama merchant atau sumber dana.');
+  if(!String(t.category||'').trim())throw Error('Pilih kategori transaksi.');
+  for(const f of ['merchant','category','payment','note'])if(String(t[f]||'').length>500)throw Error('Teks terlalu panjang (maksimal 500 karakter).');
+  return t;
+}
+
+function periodCode(code){
+  const d=today();
+  if(code==='today')return {start:d,end:d,label:'Hari ini'};
+  if(code==='all')return {start:'0000-01-01',end:'9999-12-31',label:'Semua catatan'};
+  let x=new Date(d+'T12:00:00Z');
+  if(code==='previous'){x.setUTCDate(1);x.setUTCMonth(x.getUTCMonth()-1);}
+  const y=x.getUTCFullYear(),m=x.getUTCMonth();
+  return {start:`${y}-${String(m+1).padStart(2,'0')}-01`,end:new Date(Date.UTC(y,m+1,0,12)).toISOString().slice(0,10),label:new Intl.DateTimeFormat('id-ID',{month:'long',year:'numeric',timeZone:'Asia/Jakarta'}).format(x)};
+}
+
+function aggregate(rows,code='month',category=''){
+  const p=periodCode(code);
+  const list=rows.filter(t=> (t.status==='active' || !t.status) && t.date>=p.start && t.date<=p.end && (!category||t.category===category));
+  let income=0,expense=0;
+  const cats={};
+  for(const t of list){
+    if(t.type==='Pemasukan')income+=t.amount;
+    else{expense+=t.amount;cats[t.category]=(cats[t.category]||0)+t.amount;}
+  }
+  return {income,expense,net:income-expense,count:list.length,list,categories:Object.entries(cats).sort((a,b)=>b[1]-a[1]),period:p};
+}
+
+function csvParse(text){
+  text=text.replace(/^\uFEFF/,'');
+  const first=text.split(/\r?\n/)[0];
+  const sep=(first.match(/;/g)||[]).length>(first.match(/,/g)||[]).length?';':',';
+  const out=[];let row=[],field='',quoted=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(c==='"'){if(quoted&&text[i+1]==='"'){field+='"';i++;}else if(!field||quoted)quoted=!quoted;else field+=c;}
+    else if(c===sep&&!quoted){row.push(field);field='';}
+    else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&text[i+1]==='\n')i++;row.push(field);if(row.some(v=>v.trim()))out.push(row);row=[];field='';}
+    else field+=c;
+  }
+  if(quoted)throw Error('Format CSV belum lengkap: tanda kutip tidak ditutup.');
+  row.push(field);if(row.some(v=>v.trim()))out.push(row);
+  if(out[0])out[0][0]=out[0][0].replace(/^\uFEFF/,'');
+  return out;
+}
+
+function importRows(text){
+  const rows=csvParse(text);
+  if(!rows.length)throw Error('File CSV kosong.');
+  const h=rows.shift().map(x=>x.trim().toLowerCase()),find=(names)=>h.findIndex(v=>names.includes(v));
+  const cols={date:find(['tanggal transaksi','tanggal','date']),type:find(['jenis','type']),merchant:find(['merchant / toko','merchant','toko']),category:find(['kategori','category']),amount:find(['nominal (rp)','nominal','amount']),payment:find(['metode pembayaran','pembayaran','payment']),note:find(['catatan detail','keterangan','note']),id:find(['id transaksi','id']),status:find(['status'])};
+  if(['date','type','merchant','amount'].some(k=>cols[k]<0))throw Error('CSV harus memiliki kolom tanggal, jenis, merchant, dan nominal.');
+  if(rows.length>5000)throw Error('Impor maksimal 5.000 transaksi per file.');
+  return rows.map((r,i)=>{
+    const get=k=>cols[k]<0?'':(r[cols[k]]||'').trim();
+    try{
+      const rawStatus=get('status').toLowerCase(),rawType=get('type').toLowerCase();
+      const t={date:parseDate(get('date')),type:rawType==='pemasukan'?'Pemasukan':rawType==='pengeluaran'?'Pengeluaran':'',merchant:get('merchant'),category:get('category')||'Lain-lain',amount:parseAmount(get('amount')),payment:get('payment')||'Tidak diketahui',note:get('note'),originalId:get('id'),status:['dibatalkan','cancelled'].includes(rawStatus)?'cancelled':['draf','draft','menunggu'].includes(rawStatus)?'draft':'active',source:'import'};
+      valid(t);
+      return {transaction:t,line:i+2};
+    }catch(e){return {error:e.message,line:i+2};}
+  });
+}
+
+function csvExport(rows){
+  const h=['Tanggal Transaksi','Jenis','Merchant / Toko','Kategori','Nominal (Rp)','Metode Pembayaran','Catatan Detail','ID Transaksi','Status'];
+  const cell=v=>'"'+String(v??'').replace(/^[=+@-]/,"'"+'$&').replace(/"/g,'""')+'"';
+  const data=rows.map(t=>[t.date,t.type,t.merchant,t.category,t.amount,t.payment,t.note,t.refId||t.originalId||t.id,t.status==='active'?'Aktif':t.status==='draft'?'Draf':'Dibatalkan']);
+  return '\uFEFF'+[h,...data].map(r=>r.map(cell).join(',')).join('\r\n');
+}
+
+function chatDraft(text){
+  if(/[?]|\b(jika|kalau|contoh|misalnya|rencana|ingin|mau|akan|jangan|berapa)\b/i.test(text)||!/\b(beli|bayar|terima|catat|gaji|pengeluaran|pemasukan)\b/i.test(text))return null;
+  const m=text.match(/(?:Rp\s*)?(\d+(?:[.,]\d+)*\s*(?:rb|ribu|jt|juta|k)?)(?=\s|$|[,!.])/i);
+  if(!m)return null;
+  let n;try{n=parseAmount(m[0]);}catch{return null;}
+  const incoming=/terima|gaji|pemasukan/i.test(text),place=(text.match(/\bdi\s+(.+?)(?=\s*(?:,|\bbayar\b|\btunai\b|\bqris\b|\bhari ini\b|\bkemarin\b|\btanggal\b)|$)/i)||[])[1];
+  let d=today();
+  if(/kemarin/i.test(text))d=new Date(new Date(d+'T12:00:00Z').getTime()-86400000).toISOString().slice(0,10);
+  const explicit=text.match(/\d{4}-\d{2}-\d{2}/);
+  if(explicit){try{d=parseDate(explicit[0]);}catch{return null;}}
+  return {date:d,type:incoming?'Pemasukan':'Pengeluaran',amount:n,merchant:place?.trim()||'',category:incoming?'Gaji':/makan|minum|kopi|warteg/i.test(text)?'Makanan & Minuman':/bensin|ojek|grab|gojek/i.test(text)?'Transportasi':'Lain-lain',payment:/qris/i.test(text)?'QRIS':/tunai/i.test(text)?'Tunai':'Tidak diketahui',note:text.slice(0,500),status:'active',source:'chat'};
+}
+
+const MON={jan:1,feb:2,mar:3,apr:4,mei:5,may:5,jun:6,jul:7,agu:8,agt:8,ags:8,aug:8,sep:9,okt:10,oct:10,nov:11,nop:11,des:12,dec:12};
+const p2=n=>String(n).padStart(2,'0');
+function num(s){s=s.replace(/\s/g,'');const d=s.match(/[.,]/g)||[];if(!d.length)return Number(s);const last=Math.max(s.lastIndexOf('.'),s.lastIndexOf(',')),tail=s.slice(last+1),mixed=s.includes('.')&&s.includes(',');return Number((tail.length<=2&&(mixed||d.length===1)?s.slice(0,last):s).replace(/[.,]/g,''));}
+function findDate(text,now){const y0=Number(now.slice(0,4)),found=[],P=[[/\b(\d{1,2})[\s\-\/.]*([a-z]{3,9})\.?[\s\-\/,.]*(\d{4}|\d{2})\b/gi,m=>[m[3],MON[m[2].slice(0,3).toLowerCase()],m[1]]],[/\b(\d{4})-(\d{2})-(\d{2})\b/g,m=>[m[1],m[2],m[3]]],[/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4}|\d{2})\b/g,m=>[m[3],m[2],m[1]]],[/\b([a-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})\b/gi,m=>[m[3],MON[m[1].slice(0,3).toLowerCase()],m[2]]]];for(const[re,f]of P)for(const m of text.matchAll(re)){let[y,mo,d]=f(m);if(!mo)continue;y=String(y).length===2?2000+Number(y):Number(y);if(y<2015||y>y0+1)continue;try{const iso=parseDate(`${y}-${p2(mo)}-${p2(d)}`),t=text.slice(m.index+m[0].length,m.index+m[0].length+25).match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\b(?!\d)/);found.push({i:m.index,date:iso,time:t?p2(t[1])+':'+t[2]:''})}catch{}}return found.sort((a,b)=>a.i-b.i)[0]||null;}
+const STRONG=/total\s*(bayar|pembayaran|tagihan|transaksi|belanja)|grand\s*total|jumlah\s*(transfer|bayar|pembayaran)|total\s*amount/i,WEAK=/total|jumlah|nominal|amount|tagihan|harga|bayar|paid/i,NEG=/kembali|change|tunai|cash|diskon|disc|hemat|ppn|pajak|tax|saldo|balance|poin|point|admin|fee|biaya|subtotal|sub total|dpp|qty/i;
+function findAmount(lines){const c=[];lines.forEach((ln,i)=>{const prev=i&&!/\d{3}/.test(lines[i-1])?lines[i-1]:'',ctx=ln+' '+prev;for(const m of ln.matchAll(/(rp\.?|idr)?\s*(\d[\d.,]*\d|\d)/gi)){const raw=m[2],sep=/[.,]/.test(raw);if(sep&&!/^\d{1,3}([.,]\d{3})+([.,]\d{1,2})?$/.test(raw))continue;const n=num(raw);if(!(n>=500&&n<=5e10))continue;if(!m[1]&&!sep&&!(WEAK.test(ctx)&&raw.length<=10))continue;let s=m[1]?1:0;if(STRONG.test(ctx))s+=6;else if(WEAK.test(ctx))s+=3;if(NEG.test(ctx)&&!STRONG.test(ctx))s-=6;c.push({n,s,i});}});c.sort((a,b)=>b.s-a.s||b.n-a.n||a.i-b.i);return c[0]?.n||0;}
+const BRANDS=[['Indomaret',/indomaret/],['Alfamart',/alfamart|alfamidi/],['Superindo',/super\s?indo/],['Hypermart',/hypermart/],['GoFood',/gofood/],['GrabFood',/grabfood/],['ShopeeFood',/shopeefood/],['Grab',/\bgrab\b/],['Gojek',/gojek|goride|gocar/],['Tokopedia',/tokopedia/],['Shopee',/shopee/],['PLN',/\bpln\b/],['Telkomsel',/telkomsel/],['Indihome',/indihome/],['Kopi Kenangan',/kopi kenangan/],['Janji Jiwa',/janji jiwa/],['Starbucks',/starbucks/],['KFC',/\bkfc\b/],['McDonald\'s',/mcdonald/],['Pertamina',/pertamina/],['Kimia Farma',/kimia farma/]];
+const CAT=[['Gaji',/\bgaji\b|salary/],['Tagihan',/\bpln\b|listrik|token|pdam|indihome|wifi|pulsa|paket data|telkomsel|bpjs|tagihan|cicilan|kontrakan/],['Belanja',/indomaret|alfamart|alfamidi|tokopedia|shopee(?!food)|lazada|tiktok|blibli|hypermart|uniqlo/],['Transportasi',/grab(?!food)|gojek|gocar|goride|ojek|bensin|pertamina|pertalite|\btol\b|parkir|krl|\bmrt\b|\blrt\b|transjakarta|kereta|bluebird/],['Transfer',/penerima|transfer (berhasil|ke)/],['Makanan & Minuman',/gofood|grabfood|shopeefood|warung|warteg|resto|cafe|kafe|kopi|coffee|bakso|mie\b|nasi|ayam|sate|makan|minum|bubur|martabak|starbucks|mcdonald|\bkfc\b|burger|pizza|boba|geprek/],['Kesehatan',/apotek|farma|\bk24\b|klinik|dokter|rumah sakit|\brs\b|obat/],['Pendidikan',/\bukt\b|kuliah|kursus|sekolah|gramedia|udemy/],['Hiburan',/netflix|spotify|youtube|bioskop|\bcgv\b|\bxxi\b|steam|vidio|disney/],['Kebutuhan Pokok',/sembako|beras|pasar|sayur|superindo|galon|elpiji/],['Transfer',/transfer|penerima|kirim uang/]];
+const PAY=[['QRIS',/qris/],['GoPay',/gopay/],['OVO',/\bovo\b/],['DANA',/\bdana\b/],['ShopeePay',/shopeepay/],['LinkAja',/linkaja/],['BCA',/\bbca\b|m-?bca/],['BRI',/\bbri\b|brimo/],['Mandiri',/mandiri|livin/],['BNI',/\bbni\b/],['BSI',/\bbsi\b/],['Jago',/jago/],['SeaBank',/seabank/],['Tunai',/\btunai\b|\bcash\b/]];
+const title=s=>/[a-z]/.test(s)?s:s.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
+function parseText(raw,now=today()){const lines=String(raw||'').split(/\r?\n/).map(s=>s.replace(/[|_~]+/g,' ').replace(/\s+/g,' ').trim()).filter(Boolean),low=lines.join('\n').toLowerCase();const val=re=>{for(let i=0;i<lines.length;i++){const m=lines[i].match(re);if(m){let v=(m[1]||'').replace(/^[:\-\s]+/,'').trim();if(!v&&lines[i+1])v=lines[i+1];if(v)return v;}}return'';};const d=findDate(lines.join('\n'),now),amountN=findAmount(lines);let merchant=val(/(?:^|\s)(?:nama\s+)?(?:merchant|toko|penerima|dibayarkan\s+ke|dibayar\s+ke|pembayaran\s+ke|transfer\s+ke|bayar\s+ke|paid\s+to|store|outlet)\b(.*)$/i).replace(/\b\d{6,}\b/g,'').replace(/[()]/g,' ').replace(/\s+/g,' ').trim().slice(0,60);if(!merchant){const b=BRANDS.find(([,re])=>re.test(low));if(b)merchant=b[0];}if(!merchant)merchant=lines.slice(0,5).find(l=>/[a-z]{3}/i.test(l)&&(l.match(/[a-z]/gi)||[]).length/l.length>.6&&!/struk|receipt|bukti|berhasil|pembayaran|invoice|\bjl\b|telp|npwp|www|tanggal|transaksi/i.test(l))||'';merchant=title(merchant);let refId=val(/(?:^|\s)(?:no\.?\s*(?:ref\w*|transaksi|trx|pesanan|struk|invoice|faktur|resi|kuitansi|bukti)|nomor\s*(?:ref\w*|transaksi|pesanan|struk)|ref(?:erence)?\.?\s*(?:no|number|id)?|(?:id|kode)\s*(?:transaksi|trx|pembayaran|pesanan|referensi)|trans(?:action)?\s*id|trx\s*id|order\s*(?:id|no)|invoice|receipt\s*(?:no|id)|bill\s*no|rrn)\b[\s:.#\-]*(.*)$/i).replace(/(?<=\d) (?=\d)/g,'');const rm=refId.match(/[A-Za-z0-9][A-Za-z0-9\-_\/.]{5,}/);refId=rm&&/\d/.test(rm[0])&&!/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4}$/.test(rm[0])?rm[0].replace(/[.\-_\/]+$/,'').toUpperCase():'';const type=/dana masuk|uang masuk|transfer masuk|menerima|diterima|salary|\bgaji\b|refund|cashback/.test(low)?'Pemasukan':'Pengeluaran';const category=type==='Pemasukan'&&/gaji|salary/.test(low)?'Gaji':(CAT.find(([,re])=>re.test(low))||['Lain-lain'])[0];let note=val(/(?:^|\s)(?:catatan|keterangan|berita|pesan|remarks?|deskripsi|description|tujuan\s*transaksi|notes?)\b(.*)$/i).slice(0,120);if(!note)note=({'Makanan & Minuman':'Makan & minum',Belanja:'Belanja',Transportasi:'Transportasi',Tagihan:'Bayar tagihan',Transfer:'Transfer',Kesehatan:'Kesehatan',Hiburan:'Hiburan',Gaji:'Gaji masuk','Kebutuhan Pokok':'Kebutuhan pokok',Pendidikan:'Pendidikan'}[category]||'')+(merchant&&category!=='Gaji'?(category==='Transfer'?' ke ':' di ')+merchant:'');return{type,amount:amountN,date:d?.date||now,time:d?.time||'',dateFound:!!d,merchant,category,payment:(PAY.find(([,re])=>re.test(low))||[''])[0],note:note.trim(),refId,status:'active'};}
+
+// ==========================================
+// 2. DOM & UI IMPLEMENTATION
+// ==========================================
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
-// Kategori icon mapping
 const CAT_ICONS = {
   'Makanan & Minuman': '🍔',
   'Belanja': '🛍️',
@@ -43,7 +165,6 @@ let selectedCategory = '';
 let searchQuery = '';
 let editingTx = null;
 
-// Helper ID & Toast
 const uuid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2, 9);
 
 function showToast(msg) {
@@ -55,58 +176,89 @@ function showToast(msg) {
   window._toastTimer = setTimeout(() => t.classList.remove('on'), 3500);
 }
 
-// IndexedDB Initialization
+// Database Operations
 async function initDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('finance-tracker-v2', 1);
-    req.onupgradeneeded = ev => {
-      const d = ev.target.result;
-      if (!d.objectStoreNames.contains('transactions')) {
-        const store = d.createObjectStore('transactions', { keyPath: 'id' });
-        store.createIndex('date', 'date', { unique: false });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    try {
+      const req = indexedDB.open('finance-tracker-v2', 1);
+      req.onupgradeneeded = ev => {
+        const d = ev.target.result;
+        if (!d.objectStoreNames.contains('transactions')) {
+          const store = d.createObjectStore('transactions', { keyPath: 'id' });
+          store.createIndex('date', 'date', { unique: false });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+      req.onblocked = () => resolve(null);
+    } catch (e) {
+      reject(e);
+    }
   });
 }
 
 async function loadTransactions() {
-  if (!db) return [];
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('transactions', 'readonly');
-    const store = tx.objectStore('transactions');
-    const req = store.getAll();
-    req.onsuccess = () => {
-      const items = (req.result || []).map(t => ({
-        status: 'active',
-        ...t
-      }));
-      resolve(items);
-    };
-    req.onerror = () => reject(req.error);
+  if (!db) {
+    try {
+      const stored = localStorage.getItem('ft_transactions');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  }
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('transactions', 'readonly');
+      const store = tx.objectStore('transactions');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const items = (req.result || []).map(t => ({ status: 'active', ...t }));
+        resolve(items);
+      };
+      req.onerror = () => resolve([]);
+    } catch {
+      resolve([]);
+    }
   });
 }
 
 async function saveTransaction(t) {
-  if (!db) return;
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('transactions', 'readwrite');
-    const store = tx.objectStore('transactions');
-    store.put(t);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+  t.status = t.status || 'active';
+  if (!db) {
+    const idx = transactions.findIndex(x => x.id === t.id);
+    if (idx >= 0) transactions[idx] = t; else transactions.unshift(t);
+    try { localStorage.setItem('ft_transactions', JSON.stringify(transactions)); } catch {}
+    return;
+  }
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('transactions', 'readwrite');
+      const store = tx.objectStore('transactions');
+      store.put(t);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
   });
 }
 
 async function deleteTransaction(id) {
-  if (!db) return;
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('transactions', 'readwrite');
-    const store = tx.objectStore('transactions');
-    store.delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+  if (!db) {
+    transactions = transactions.filter(x => x.id !== id);
+    try { localStorage.setItem('ft_transactions', JSON.stringify(transactions)); } catch {}
+    return;
+  }
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('transactions', 'readwrite');
+      const store = tx.objectStore('transactions');
+      store.delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
   });
 }
 
@@ -304,7 +456,6 @@ function renderTransactions() {
 
   list.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
 
-  // Category chips
   const chipsHtml = `
     <div class="chips" style="overflow-x: auto; padding-bottom: 8px; margin-bottom: 12px;">
       <button class="chip ${!selectedCategory ? 'on' : ''}" data-cat="">Semua</button>
@@ -326,7 +477,6 @@ function renderTransactions() {
       </div>
     `;
   } else {
-    // Group by date
     let lastDate = '';
     let items = '';
     list.forEach(t => {
@@ -379,7 +529,7 @@ function renderTxItem(t) {
   `;
 }
 
-// 3. Receipt Scanner & AI Parser View
+// 3. Receipt Scanner View
 function renderReceiptScanner() {
   return `
     <div class="hd">
@@ -412,7 +562,7 @@ function renderReceiptScanner() {
   `;
 }
 
-// 4. Data Tools (Import/Export/Reset)
+// 4. Data Tools
 function renderDataTools() {
   return `
     <div class="hd">
@@ -447,7 +597,6 @@ function renderDataTools() {
 // EVENT LISTENERS & MODALS
 // -------------------------------------------------------------
 function attachViewListeners() {
-  // Period filter
   const pFilter = $('#periodFilter');
   if (pFilter) {
     pFilter.onchange = ev => {
@@ -456,17 +605,14 @@ function attachViewListeners() {
     };
   }
 
-  // Links on dashboard
   const btnAllTx = $('#btnSeeAllTx');
   if (btnAllTx) btnAllTx.onclick = () => { currentTab = 'transaksi'; render(); };
   const btnAllCat = $('#btnSeeAllCat');
   if (btnAllCat) btnAllCat.onclick = () => { currentTab = 'transaksi'; render(); };
 
-  // New Tx buttons
   const btnNew = $('#btnNewTx');
   if (btnNew) btnNew.onclick = () => openTxModal();
 
-  // Search & chips
   const sInput = $('#txSearch');
   if (sInput) {
     sInput.oninput = ev => {
@@ -484,7 +630,6 @@ function attachViewListeners() {
     };
   });
 
-  // Transaction item click (Edit)
   $$('.tx').forEach(b => {
     b.onclick = () => {
       const id = b.dataset.txid;
@@ -493,7 +638,6 @@ function attachViewListeners() {
     };
   });
 
-  // Receipt Scanner View Listeners
   const btnParse = $('#btnParseText');
   if (btnParse) {
     btnParse.onclick = () => {
@@ -503,7 +647,6 @@ function attachViewListeners() {
         return;
       }
       
-      // Try chat draft or parseText
       let draft = chatDraft(raw);
       if (!draft || !draft.amount) {
         draft = parseText(raw);
@@ -518,7 +661,8 @@ function attachViewListeners() {
           category: draft.category || 'Lain-lain',
           date: draft.date || today(),
           payment: draft.payment || 'QRIS',
-          note: draft.note || raw.slice(0, 80)
+          note: draft.note || raw.slice(0, 80),
+          status: 'active'
         });
         showToast('✅ Berhasil diekstrak! Silakan periksa detailnya.');
       } else {
@@ -531,7 +675,8 @@ function attachViewListeners() {
           category: 'Makanan & Minuman',
           date: today(),
           payment: 'QRIS',
-          note: raw.slice(0, 100)
+          note: raw.slice(0, 100),
+          status: 'active'
         });
       }
     };
@@ -550,13 +695,13 @@ function attachViewListeners() {
         category: 'Belanja',
         date: today(),
         payment: 'QRIS',
-        note: 'Nota: ' + file.name
+        note: 'Nota: ' + file.name,
+        status: 'active'
       });
       showToast('📸 Foto diterima! Masukkan nominal transaksi.');
     };
   }
 
-  // Data Tools Listeners
   const btnExport = $('#btnExportCsv');
   if (btnExport) {
     btnExport.onclick = () => {
@@ -589,6 +734,7 @@ function attachViewListeners() {
         const validItems = parsed.filter(p => p.transaction).map(p => ({
           ...p.transaction,
           id: uuid(),
+          status: 'active',
           createdAt: Date.now()
         }));
 
@@ -719,7 +865,6 @@ function openTxModal(tx = null) {
     </div>
   `;
 
-  // Attach dialog listeners
   $('#closeDlg').onclick = () => dlg.close();
   $('#dlgCancel').onclick = () => dlg.close();
 
@@ -735,7 +880,6 @@ function openTxModal(tx = null) {
     };
   }
 
-  // Format amount input as user types
   const amtInput = $('#dlgAmount');
   amtInput.oninput = () => {
     let raw = amtInput.value.replace(/[^0-9]/g, '');
@@ -772,10 +916,8 @@ function openTxModal(tx = null) {
       };
 
       valid(record);
-
       await saveTransaction(record);
 
-      // Update state
       const idx = transactions.findIndex(t => t.id === record.id);
       if (idx >= 0) {
         transactions[idx] = record;
@@ -796,7 +938,7 @@ function openTxModal(tx = null) {
 }
 
 // -------------------------------------------------------------
-// SEED DEFAULT TRANSACTIONS IF FRESH (Demo preview)
+// SEED DEFAULT TRANSACTIONS
 // -------------------------------------------------------------
 async function seedDefaultDataIfEmpty() {
   if (transactions.length > 0) return;
@@ -817,15 +959,18 @@ async function seedDefaultDataIfEmpty() {
 // -------------------------------------------------------------
 // BOOTSTRAP APP
 // -------------------------------------------------------------
-async function init() {
-  try {
-    db = await initDB();
-    transactions = await loadTransactions();
-    await seedDefaultDataIfEmpty();
-  } catch (err) {
-    console.error('Failed to init local database:', err);
-  }
-  render();
-}
+// 1. Render immediately so the user never sees a blank screen!
+render();
 
-init();
+// 2. Asynchronously load database & re-render
+initDB().then(async d => {
+  db = d;
+  transactions = await loadTransactions();
+  await seedDefaultDataIfEmpty();
+  render();
+}).catch(async err => {
+  console.warn('DB fallback to memory:', err);
+  transactions = await loadTransactions();
+  await seedDefaultDataIfEmpty();
+  render();
+});
