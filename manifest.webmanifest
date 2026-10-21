@@ -1,0 +1,17 @@
+{
+  "name": "Finance Tracker",
+  "short_name": "Finance",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#173c30",
+  "theme_color": "#173c30",
+  "description": "Finance Tracker — Keuangan lebih terarah",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
