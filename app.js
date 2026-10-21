@@ -42,6 +42,10 @@ let currentPeriod = 'month';
 let selectedCategory = '';
 let searchQuery = '';
 let editingTx = null;
+let syncToken = localStorage.getItem('finance-sync-token') || '';
+let syncState = syncToken ? 'connecting' : 'offline';
+let lastSyncAt = 0;
+let syncTimer = null;
 
 // Helper ID & Toast
 const uuid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2, 9);
@@ -88,7 +92,7 @@ async function loadTransactions() {
   });
 }
 
-async function saveTransaction(t) {
+async function saveLocalTransaction(t) {
   if (!db) return;
   return new Promise((resolve, reject) => {
     const tx = db.transaction('transactions', 'readwrite');
@@ -99,7 +103,7 @@ async function saveTransaction(t) {
   });
 }
 
-async function deleteTransaction(id) {
+async function deleteLocalTransaction(id) {
   if (!db) return;
   return new Promise((resolve, reject) => {
     const tx = db.transaction('transactions', 'readwrite');
@@ -108,6 +112,96 @@ async function deleteTransaction(id) {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+async function replaceLocalTransactions(items) {
+  if (!db) return;
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('transactions', 'readwrite');
+    const store = tx.objectStore('transactions');
+    store.clear();
+    items.forEach(item => store.put(item));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function syncConnected() {
+  return Boolean(syncToken);
+}
+
+async function syncRequest(action, payload = {}) {
+  if (!syncToken) throw new Error('Aplikasi belum dihubungkan ke bot Telegram.');
+  const response = await fetch('/api/sync', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${syncToken}`
+    },
+    body: JSON.stringify({ action, ...payload })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) throw new Error(data.error || 'Sinkronisasi belum berhasil.');
+  return data;
+}
+
+async function refreshFromBot({ silent = false } = {}) {
+  if (!syncConnected()) return false;
+  syncState = 'connecting';
+  if (!silent) render();
+  try {
+    const data = await syncRequest('list');
+    transactions = (data.transactions || []).map(t => ({ status: 'active', source: 'telegram', ...t }));
+    await replaceLocalTransactions(transactions);
+    syncState = 'online';
+    lastSyncAt = Date.now();
+    render();
+    if (!silent) {
+      showToast('✅ Data terbaru dari bot sudah dimuat.');
+    }
+    return true;
+  } catch (error) {
+    syncState = 'error';
+    render();
+    if (!silent) {
+      showToast('⚠️ ' + error.message);
+    }
+    return false;
+  }
+}
+
+async function saveTransaction(t) {
+  if (!syncConnected()) {
+    await saveLocalTransaction(t);
+    return t;
+  }
+  const data = await syncRequest('upsert', { transaction: t });
+  await saveLocalTransaction(data.transaction);
+  syncState = 'online';
+  lastSyncAt = Date.now();
+  return data.transaction;
+}
+
+async function deleteTransaction(id) {
+  if (syncConnected()) {
+    await syncRequest('cancel', { id });
+    syncState = 'online';
+    lastSyncAt = Date.now();
+  }
+  await deleteLocalTransaction(id);
+}
+
+function acceptConnectionFromUrl() {
+  const hash = location.hash || '';
+  const match = hash.match(/^#connect=([^&]+)/);
+  if (!match) return false;
+  const token = decodeURIComponent(match[1] || '').trim();
+  if (!/^[A-Za-z0-9_-]{32,200}$/.test(token)) return false;
+  syncToken = token;
+  localStorage.setItem('finance-sync-token', token);
+  history.replaceState(null, '', location.pathname + location.search);
+  syncState = 'connecting';
+  return true;
 }
 
 function formatDateIndo(dStr) {
@@ -232,7 +326,7 @@ function renderDashboard() {
     <div class="hd">
       <div>
         <h1>Ringkasan Keuangan</h1>
-        <small class="muted">Catat uang, tenang hati · Ruang pribadi offline</small>
+        <small class="muted">${syncConnected() ? (syncState === 'online' ? 'Tersinkron dengan bot Telegram' : syncState === 'error' ? 'Koneksi bot perlu diperiksa' : 'Mengambil data dari bot…') : 'Catat uang, tenang hati · Ruang pribadi offline'}</small>
       </div>
       <div>
         <select id="periodFilter" style="width: auto; padding: 6px 12px; margin: 0; font-size: 13px; font-weight: 600;">
@@ -414,6 +508,18 @@ function renderReceiptScanner() {
 
 // 4. Data Tools (Import/Export/Reset)
 function renderDataTools() {
+  const syncCard = syncConnected() ? `
+    <div class="card" style="border: 1px solid var(--g);">
+      <h2>✅ Terhubung dengan Bot Telegram</h2>
+      <p class="muted" style="margin-bottom: 14px;">Transaksi dari bot dan aplikasi memakai spreadsheet yang sama.${lastSyncAt ? ' Terakhir diperbarui ' + new Date(lastSyncAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + '.' : ''}</p>
+      <button class="btn pri" id="btnSyncNow">🔄 Sinkronkan Sekarang</button>
+      <button class="btn ghost" id="btnDisconnectSync">Putuskan perangkat ini</button>
+    </div>` : `
+    <div class="card" style="border: 1px solid var(--g);">
+      <h2>Hubungkan dengan Bot Telegram</h2>
+      <p class="muted" style="margin-bottom: 14px;">Kirim <b>/hubungkan</b> ke bot Telegram, lalu buka tautan pribadi yang dikirim bot. Transaksi akan diambil dari spreadsheet yang sama.</p>
+      <a class="btn pri" href="https://t.me/fafa_money_bot" target="_blank" rel="noreferrer">Buka Bot Telegram ↗</a>
+    </div>`;
   return `
     <div class="hd">
       <div>
@@ -421,6 +527,8 @@ function renderDataTools() {
         <small class="muted">Cadangkan atau pindahkan data transaksi Anda kapan saja</small>
       </div>
     </div>
+
+    ${syncCard}
 
     <div class="card">
       <h2>Cadangkan Data (CSV)</h2>
@@ -437,8 +545,8 @@ function renderDataTools() {
 
     <div class="card" style="border: 1px solid var(--red);">
       <h2 style="color: var(--red);">Hapus Semua Data</h2>
-      <p class="muted" style="margin-bottom: 14px;">Data tersimpan secara offline di browser Anda. Tindakan ini akan mengosongkan seluruh database transaksi.</p>
-      <button class="btn danger" id="btnResetData">🗑️ Kosongkan Database</button>
+      <p class="muted" style="margin-bottom: 14px;">${syncConnected() ? 'Fitur ini dinonaktifkan saat tersambung agar catatan bot tidak terhapus tanpa sengaja.' : 'Data tersimpan secara offline di browser Anda. Tindakan ini akan mengosongkan seluruh database transaksi.'}</p>
+      <button class="btn danger" id="btnResetData" ${syncConnected() ? 'disabled' : ''}>🗑️ Kosongkan Database</button>
     </div>
   `;
 }
@@ -447,6 +555,18 @@ function renderDataTools() {
 // EVENT LISTENERS & MODALS
 // -------------------------------------------------------------
 function attachViewListeners() {
+  const btnSyncNow = $('#btnSyncNow');
+  if (btnSyncNow) btnSyncNow.onclick = () => refreshFromBot();
+  const btnDisconnect = $('#btnDisconnectSync');
+  if (btnDisconnect) {
+    btnDisconnect.onclick = () => {
+      localStorage.removeItem('finance-sync-token');
+      syncToken = '';
+      syncState = 'offline';
+      render();
+      showToast('Perangkat ini tidak lagi tersambung. Data cache tetap tersimpan.');
+    };
+  }
   // Period filter
   const pFilter = $('#periodFilter');
   if (pFilter) {
@@ -597,9 +717,8 @@ function attachViewListeners() {
           return;
         }
 
-        for (const item of validItems) {
-          await saveTransaction(item);
-        }
+        if (syncConnected() && validItems.length > 100) throw new Error('Saat tersinkron, impor dibatasi 100 transaksi per file.');
+        for (const item of validItems) await saveTransaction(item);
 
         transactions = await loadTransactions();
         render();
@@ -726,11 +845,15 @@ function openTxModal(tx = null) {
   if ($('#dlgDelete')) {
     $('#dlgDelete').onclick = async () => {
       if (confirm('Hapus transaksi ini?')) {
-        await deleteTransaction(editingTx.id);
-        transactions = transactions.filter(t => t.id !== editingTx.id);
-        dlg.close();
-        render();
-        showToast('Transaksi dihapus.');
+        try {
+          await deleteTransaction(editingTx.id);
+          transactions = transactions.filter(t => t.id !== editingTx.id);
+          dlg.close();
+          render();
+          showToast(syncConnected() ? 'Transaksi dibatalkan dan tersinkron.' : 'Transaksi dihapus.');
+        } catch (error) {
+          showToast('⚠️ ' + error.message);
+        }
       }
     };
   }
@@ -773,14 +896,14 @@ function openTxModal(tx = null) {
 
       valid(record);
 
-      await saveTransaction(record);
+      const savedRecord = await saveTransaction(record);
 
       // Update state
       const idx = transactions.findIndex(t => t.id === record.id);
       if (idx >= 0) {
-        transactions[idx] = record;
+        transactions[idx] = savedRecord;
       } else {
-        transactions.unshift(record);
+        transactions.unshift(savedRecord);
       }
 
       dlg.close();
@@ -796,36 +919,26 @@ function openTxModal(tx = null) {
 }
 
 // -------------------------------------------------------------
-// SEED DEFAULT TRANSACTIONS IF FRESH (Demo preview)
-// -------------------------------------------------------------
-async function seedDefaultDataIfEmpty() {
-  if (transactions.length > 0) return;
-
-  const t = today();
-  const samples = [
-    { id: uuid(), type: 'Pemasukan', amount: 8500000, merchant: 'Gaji Bulanan', category: 'Gaji', date: t, payment: 'BCA', note: 'Gaji pokok', status: 'active', createdAt: Date.now() - 3000 },
-    { id: uuid(), type: 'Pengeluaran', amount: 550130, merchant: 'Shopee / BRIVA', category: 'Belanja', date: t, payment: 'BRI', note: 'Pembayaran tagihan Shopee', status: 'active', createdAt: Date.now() - 2000 },
-    { id: uuid(), type: 'Pengeluaran', amount: 35000, merchant: 'Kopi Kenangan', category: 'Makanan & Minuman', date: t, payment: 'QRIS', note: 'Es kopi kenangan mantan', status: 'active', createdAt: Date.now() - 1000 }
-  ];
-
-  for (const s of samples) {
-    await saveTransaction(s);
-  }
-  transactions = await loadTransactions();
-}
-
-// -------------------------------------------------------------
 // BOOTSTRAP APP
 // -------------------------------------------------------------
 async function init() {
+  acceptConnectionFromUrl();
   try {
     db = await initDB();
     transactions = await loadTransactions();
-    await seedDefaultDataIfEmpty();
+    if (syncConnected()) await refreshFromBot({ silent: true });
   } catch (err) {
     console.error('Failed to init local database:', err);
   }
   render();
+  if (syncConnected()) {
+    syncTimer = setInterval(() => refreshFromBot({ silent: true }), 60000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastSyncAt > 30000) {
+        refreshFromBot({ silent: true });
+      }
+    });
+  }
 }
 
 init();
