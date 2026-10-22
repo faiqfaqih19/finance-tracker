@@ -164,8 +164,9 @@ let currentPeriod = 'month';
 let selectedCategory = '';
 let searchQuery = '';
 let editingTx = null;
-let syncToken = localStorage.getItem('finance-sync-token') || '';
-let syncState = syncToken ? 'connecting' : 'offline';
+const DEFAULT_SYNC_TOKEN = 'finance-tracker-pribadi-token-2026-faiq';
+let syncToken = localStorage.getItem('finance-sync-token') || DEFAULT_SYNC_TOKEN;
+let syncState = 'connecting';
 let lastSyncAt = 0;
 let syncTimer = null;
 
@@ -302,7 +303,7 @@ function syncConnected() {
 const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwzt7lnCNjpkL8ureMnhv_6i5EFEvs-8SA4f9E1Wv76tcDRtGTOxfxROGsZUHzJAULyFw/exec';
 
 async function syncRequest(action, payload = {}) {
-  if (!syncToken) throw new Error('Aplikasi belum dihubungkan ke bot Telegram.');
+  const activeToken = syncToken || DEFAULT_SYNC_TOKEN;
 
   // 1. Coba lewat proxy /api/sync jika ada (misal di Vercel / server lokal)
   try {
@@ -310,25 +311,40 @@ async function syncRequest(action, payload = {}) {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${syncToken}`
+        authorization: `Bearer ${activeToken}`
       },
       body: JSON.stringify({ action, ...payload })
     });
     if (response.status !== 404) {
       const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.ok) throw new Error(data.error || 'Sinkronisasi belum berhasil.');
-      return data;
+      if (data && data.ok) return data;
     }
   } catch (e) {
-    // Jika fetch /api/sync gagal atau 404 (misal di GitHub Pages / static server), lanjutkan ke fallback
+    // Lanjutkan ke direct fetch jika /api/sync tidak tersedia (misal di static host)
   }
 
   // 2. Fallback langsung ke Google Apps Script Web App
   const scriptUrl = localStorage.getItem('finance-apps-script-url') || DEFAULT_APPS_SCRIPT_URL;
+
+  // A. Untuk aksi 'list', utamakan GET request agar bebas dari kendala CORS
+  if (action === 'list') {
+    try {
+      const getRes = await fetch(`${scriptUrl}?api=sync&action=list&token=${encodeURIComponent(activeToken)}`, {
+        method: 'GET',
+        redirect: 'follow'
+      });
+      const data = await getRes.json().catch(() => ({}));
+      if (data && data.ok) return data;
+    } catch (e) {
+      // lanjut ke POST jika GET gagal
+    }
+  }
+
+  // B. Untuk aksi lain (upsert, cancel) atau jika GET belum mengembalikan data, gunakan POST
   const directRes = await fetch(`${scriptUrl}?api=sync`, {
     method: 'POST',
     headers: { 'content-type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action, token: syncToken, ...payload }),
+    body: JSON.stringify({ action, token: activeToken, ...payload }),
     redirect: 'follow'
   });
   const data = await directRes.json().catch(() => ({}));
@@ -1039,9 +1055,10 @@ function renderDashboard() {
     <div class="hd">
       <div>
         <h1>Ringkasan Keuangan</h1>
-        <small class="muted">${syncConnected() ? (syncState === 'online' ? 'Tersinkron dengan bot Telegram' : syncState === 'error' ? 'Koneksi bot perlu diperiksa' : 'Mengambil data dari bot…') : 'Catat uang, tenang hati · Ruang pribadi offline'}</small>
+        <small class="muted">${syncConnected() ? (syncState === 'online' ? '🟢 Tersinkron dengan spreadsheet bot' : syncState === 'error' ? '⚠️ Koneksi bot perlu diperiksa' : '⏳ Mengambil data dari bot…') : 'Catat uang, tenang hati · Ruang pribadi offline'}</small>
       </div>
-      <div>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <button id="btnHeaderSync" class="btn ghost" style="padding: 6px 12px; font-size: 13px;" title="Sinkronkan data sekarang">🔄 Sync</button>
         <select id="periodFilter" style="width: auto; padding: 6px 12px; margin: 0; font-size: 13px; font-weight: 600;">
           <option value="month" ${currentPeriod === 'month' ? 'selected' : ''}>Bulan ini</option>
           <option value="today" ${currentPeriod === 'today' ? 'selected' : ''}>Hari ini</option>
@@ -1509,6 +1526,19 @@ function renderRecurringBills() {
 // EVENT LISTENERS & MODALS
 // -------------------------------------------------------------
 function attachViewListeners() {
+  const btnHeaderSync = $('#btnHeaderSync');
+  if (btnHeaderSync) {
+    btnHeaderSync.onclick = async () => {
+      btnHeaderSync.textContent = '⏳';
+      btnHeaderSync.disabled = true;
+      const ok = await refreshFromBot();
+      btnHeaderSync.textContent = '🔄 Sync';
+      btnHeaderSync.disabled = false;
+      if (ok) {
+        showToast('✅ Berhasil menyinkronkan data dengan Google Sheets!');
+      }
+    };
+  }
   const btnSyncNow = $('#btnSyncNow');
   if (btnSyncNow) btnSyncNow.onclick = () => refreshFromBot();
   const btnDisconnect = $('#btnDisconnectSync');
