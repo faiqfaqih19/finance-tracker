@@ -299,18 +299,40 @@ function syncConnected() {
   return Boolean(syncToken);
 }
 
+const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwzt7lnCNjpkL8ureMnhv_6i5EFEvs-8SA4f9E1Wv76tcDRtGTOxfxROGsZUHzJAULyFw/exec';
+
 async function syncRequest(action, payload = {}) {
   if (!syncToken) throw new Error('Aplikasi belum dihubungkan ke bot Telegram.');
-  const response = await fetch('/api/sync', {
+
+  // 1. Coba lewat proxy /api/sync jika ada (misal di Vercel / server lokal)
+  try {
+    const response = await fetch('/api/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${syncToken}`
+      },
+      body: JSON.stringify({ action, ...payload })
+    });
+    if (response.status !== 404) {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) throw new Error(data.error || 'Sinkronisasi belum berhasil.');
+      return data;
+    }
+  } catch (e) {
+    // Jika fetch /api/sync gagal atau 404 (misal di GitHub Pages / static server), lanjutkan ke fallback
+  }
+
+  // 2. Fallback langsung ke Google Apps Script Web App
+  const scriptUrl = localStorage.getItem('finance-apps-script-url') || DEFAULT_APPS_SCRIPT_URL;
+  const directRes = await fetch(`${scriptUrl}?api=sync`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${syncToken}`
-    },
-    body: JSON.stringify({ action, ...payload })
+    headers: { 'content-type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, token: syncToken, ...payload }),
+    redirect: 'follow'
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) throw new Error(data.error || 'Sinkronisasi belum berhasil.');
+  const data = await directRes.json().catch(() => ({}));
+  if (!directRes.ok || !data.ok) throw new Error(data.error || 'Sinkronisasi belum berhasil.');
   return data;
 }
 
@@ -363,9 +385,16 @@ async function deleteTransaction(id) {
 
 function acceptConnectionFromUrl() {
   const hash = location.hash || '';
-  const match = hash.match(/^#connect=([^&]+)/);
-  if (!match) return false;
-  const token = decodeURIComponent(match[1] || '').trim();
+  const tokenMatch = hash.match(/[#&]connect=([^&]+)/);
+  const scriptMatch = hash.match(/[#&]script=([^&]+)/);
+  if (scriptMatch) {
+    const scriptUrl = decodeURIComponent(scriptMatch[1] || '').trim();
+    if (/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec/.test(scriptUrl)) {
+      localStorage.setItem('finance-apps-script-url', scriptUrl);
+    }
+  }
+  if (!tokenMatch) return false;
+  const token = decodeURIComponent(tokenMatch[1] || '').trim();
   if (!/^[A-Za-z0-9_-]{32,200}$/.test(token)) return false;
   syncToken = token;
   localStorage.setItem('finance-sync-token', token);
@@ -1370,7 +1399,17 @@ function renderDataTools() {
     <div class="card" style="border: 1px solid var(--g);">
       <h2>Hubungkan dengan Bot Telegram</h2>
       <p class="muted" style="margin-bottom: 14px;">Kirim <b>/hubungkan</b> ke bot Telegram, lalu buka tautan pribadi yang dikirim bot. Transaksi akan diambil dari spreadsheet yang sama.</p>
-      <a class="btn pri" href="https://t.me/fafa_money_bot" target="_blank" rel="noreferrer">Buka Bot Telegram ↗</a>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+        <a class="btn pri" href="https://t.me/fafa_money_bot" target="_blank" rel="noreferrer">Buka Bot Telegram ↗</a>
+        <button class="btn ghost" id="btnManualConnect">Input Token Manual</button>
+      </div>
+      <div id="manualConnectBox" style="display: none; margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px;">
+        <label style="font-size: 0.82rem; font-weight: 600;">Token Koneksi:</label>
+        <div style="display: flex; gap: 6px; margin-top: 4px;">
+          <input type="text" id="manualTokenInput" placeholder="Tempel token dari bot /hubungkan di sini" style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-card); color: inherit;">
+          <button class="btn pri" id="btnSaveManualToken">Sambungkan</button>
+        </div>
+      </div>
     </div>`;
   return `
     <div class="hd">
@@ -1480,6 +1519,32 @@ function attachViewListeners() {
       syncState = 'offline';
       render();
       showToast('Perangkat ini tidak lagi tersambung. Data cache tetap tersimpan.');
+    };
+  }
+  const btnManualConnect = $('#btnManualConnect');
+  const manualBox = $('#manualConnectBox');
+  if (btnManualConnect && manualBox) {
+    btnManualConnect.onclick = () => {
+      manualBox.style.display = manualBox.style.display === 'none' ? 'block' : 'none';
+    };
+  }
+  const btnSaveManual = $('#btnSaveManualToken');
+  if (btnSaveManual) {
+    btnSaveManual.onclick = async () => {
+      const val = ($('#manualTokenInput')?.value || '').trim();
+      if (!/^[A-Za-z0-9_-]{32,200}$/.test(val)) {
+        showToast('⚠️ Format token tidak valid (harus 32-200 karakter).');
+        return;
+      }
+      syncToken = val;
+      localStorage.setItem('finance-sync-token', val);
+      syncState = 'connecting';
+      render();
+      showToast('⏳ Mencoba menyambungkan ke Google Sheets...');
+      const ok = await refreshFromBot();
+      if (ok) {
+        showToast('✅ Berhasil terhubung ke spreadsheet bot!');
+      }
     };
   }
   // Period filter
