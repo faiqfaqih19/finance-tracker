@@ -165,6 +165,11 @@ let selectedCategory = '';
 let searchQuery = '';
 let editingTx = null;
 
+// Chart instances
+let categoryPieChart = null;
+let monthlyTrendChart = null;
+let incomeExpenseBarChart = null;
+
 const uuid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2, 9);
 
 function showToast(msg) {
@@ -180,12 +185,17 @@ function showToast(msg) {
 async function initDB() {
   return new Promise((resolve, reject) => {
     try {
-      const req = indexedDB.open('finance-tracker-v2', 1);
+      const req = indexedDB.open('finance-tracker-v3', 1);
       req.onupgradeneeded = ev => {
         const d = ev.target.result;
         if (!d.objectStoreNames.contains('transactions')) {
           const store = d.createObjectStore('transactions', { keyPath: 'id' });
           store.createIndex('date', 'date', { unique: false });
+        }
+        if (!d.objectStoreNames.contains('recurring')) {
+          const store = d.createObjectStore('recurring', { keyPath: 'id' });
+          store.createIndex('nextDue', 'nextDue', { unique: false });
+          store.createIndex('status', 'status', { unique: false });
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -262,6 +272,137 @@ async function deleteTransaction(id) {
   });
 }
 
+// Recurring Bills State
+let recurringBills = [];
+
+// Recurring Bills Functions
+const FREQUENCIES = [
+  { value: 'weekly', label: 'Mingguan', days: 7 },
+  { value: 'monthly', label: 'Bulanan', days: 30 },
+  { value: 'quarterly', label: 'Triwulanan', days: 90 },
+  { value: 'yearly', label: 'Tahunan', days: 365 },
+  { value: 'custom', label: 'Kustom (hari)', days: null }
+];
+
+async function loadRecurringBills() {
+  if (!db) {
+    try {
+      const stored = localStorage.getItem('ft_recurring');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  }
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('recurring', 'readonly');
+      const store = tx.objectStore('recurring');
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+async function saveRecurringBill(bill) {
+  if (!db) {
+    const idx = recurringBills.findIndex(x => x.id === bill.id);
+    if (idx >= 0) recurringBills[idx] = bill; else recurringBills.unshift(bill);
+    try { localStorage.setItem('ft_recurring', JSON.stringify(recurringBills)); } catch {}
+    return;
+  }
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('recurring', 'readwrite');
+      const store = tx.objectStore('recurring');
+      store.put(bill);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+async function deleteRecurringBill(id) {
+  if (!db) {
+    recurringBills = recurringBills.filter(x => x.id !== id);
+    try { localStorage.setItem('ft_recurring', JSON.stringify(recurringBills)); } catch {}
+    return;
+  }
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('recurring', 'readwrite');
+      const store = tx.objectStore('recurring');
+      store.delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function getNextDueDate(startDate, frequency, customDays) {
+  const start = new Date(startDate + 'T12:00:00Z');
+  const freq = FREQUENCIES.find(f => f.value === frequency);
+  const days = freq ? freq.days : customDays;
+  if (!days) return startDate;
+  const next = new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
+  return next.toISOString().slice(0, 10);
+}
+
+function checkAndGenerateRecurringTransactions() {
+  const todayStr = today();
+  const dueBills = recurringBills.filter(b => b.status === 'active' && b.nextDue <= todayStr);
+
+  for (const bill of dueBills) {
+    // Create transaction from recurring bill
+    const transaction = {
+      id: uuid(),
+      type: 'Pengeluaran',
+      amount: bill.amount,
+      merchant: bill.merchant,
+      category: bill.category || 'Tagihan',
+      date: bill.nextDue,
+      payment: bill.payment || 'Tunai',
+      note: `Tagihan berkala: ${bill.name}`,
+      status: 'active',
+      source: 'recurring',
+      recurringId: bill.id,
+      createdAt: Date.now()
+    };
+
+    saveTransaction(transaction);
+
+    // Update next due date
+    bill.nextDue = getNextDueDate(bill.nextDue, bill.frequency, bill.customDays);
+    bill.lastGenerated = todayStr;
+    saveRecurringBill(bill);
+  }
+
+  if (dueBills.length > 0) {
+    showToast(`✅ ${dueBills.length} tagihan berkala dibuat hari ini.`);
+  }
+}
+
+function formatFrequency(freq, customDays) {
+  const f = FREQUENCIES.find(x => x.value === freq);
+  if (freq === 'custom' && customDays) return `Setiap ${customDays} hari`;
+  return f ? f.label : freq;
+}
+
+function formatDateShort(dStr) {
+  try {
+    const d = new Date(dStr + 'T12:00:00Z');
+    return new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short' }).format(d);
+  } catch {
+    return dStr;
+  }
+}
+
 function formatDateIndo(dStr) {
   try {
     const d = new Date(dStr + 'T12:00:00Z');
@@ -272,42 +413,367 @@ function formatDateIndo(dStr) {
 }
 
 // -------------------------------------------------------------
+// CHART FUNCTIONS
+// -------------------------------------------------------------
+function getChartColors() {
+  const isDark = document.documentElement.classList.contains('dark');
+  return {
+    textColor: isDark ? '#e8f5e9' : '#0d2a17',
+    gridColor: isDark ? 'rgba(224,247,241,0.15)' : 'rgba(0,77,0,0.1)',
+    tooltipBg: isDark ? '#1a3d2e' : '#fff',
+    tooltipText: isDark ? '#e8f5e9' : '#0d2a17',
+    primary: '#007a33',
+    secondary: '#66b3a1',
+    accent: '#b2e0d4',
+    income: '#007a33',
+    expense: '#b3422f',
+    net: '#004d00'
+  };
+}
+
+function destroyCharts() {
+  [categoryPieChart, monthlyTrendChart, incomeExpenseBarChart].forEach(chart => {
+    if (chart) {
+      chart.destroy();
+    }
+  });
+  categoryPieChart = monthlyTrendChart = incomeExpenseBarChart = null;
+}
+
+function createCategoryPieChart(ctx, agg) {
+  if (!agg.categories.length) return null;
+
+  const colors = getChartColors();
+  const labels = agg.categories.slice(0, 6).map(([cat]) => cat);
+  const data = agg.categories.slice(0, 6).map(([, amt]) => amt);
+
+  const bgColors = [
+    'rgba(0, 122, 51, 0.8)',
+    'rgba(102, 179, 161, 0.8)',
+    'rgba(178, 224, 212, 0.8)',
+    'rgba(0, 77, 0, 0.8)',
+    'rgba(179, 66, 47, 0.8)',
+    'rgba(248, 180, 0, 0.8)'
+  ];
+
+  return new Chart(ctx, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: bgColors, borderWidth: 0 }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      cutout: '65%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            color: colors.textColor,
+            font: { size: 12, family: 'Plus Jakarta Sans' },
+            padding: 16,
+            usePointStyle: true,
+            pointStyle: 'circle'
+          }
+        },
+        tooltip: {
+          backgroundColor: colors.tooltipBg,
+          titleColor: colors.tooltipText,
+          bodyColor: colors.tooltipText,
+          padding: 12,
+          displayColors: true,
+          callbacks: {
+            label: ctx => `${ctx.label}: ${money(ctx.raw)} (${((ctx.raw / data.reduce((a,b)=>a+b,0)) * 100).toFixed(1)}%)`
+          }
+        }
+      }
+    }
+  });
+}
+
+function createMonthlyTrendChart(ctx, transactions) {
+  // Get last 6 months of data
+  const months = [];
+  const now = new Date(today() + 'T12:00:00Z');
+
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const label = new Intl.DateTimeFormat('id-ID', { month: 'short', year: '2-digit', timeZone: 'Asia/Jakarta' }).format(d);
+    months.push({ key, label, start: `${key}-01`, end: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 12)).toISOString().slice(0, 10) });
+  }
+
+  const incomeData = [];
+  const expenseData = [];
+
+  for (const m of months) {
+    let income = 0, expense = 0;
+    for (const t of transactions) {
+      if ((t.status === 'active' || !t.status) && t.date >= m.start && t.date <= m.end) {
+        if (t.type === 'Pemasukan') income += t.amount;
+        else expense += t.amount;
+      }
+    }
+    incomeData.push(income);
+    expenseData.push(expense);
+  }
+
+  const colors = getChartColors();
+
+  return new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: months.map(m => m.label),
+      datasets: [
+        {
+          label: 'Pemasukan',
+          data: incomeData,
+          borderColor: colors.income,
+          backgroundColor: 'rgba(0, 122, 51, 0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 4,
+          pointHoverRadius: 6
+        },
+        {
+          label: 'Pengeluaran',
+          data: expenseData,
+          borderColor: colors.expense,
+          backgroundColor: 'rgba(179, 66, 47, 0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 4,
+          pointHoverRadius: 6
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: colors.textColor, font: { size: 12, family: 'Plus Jakarta Sans' }, usePointStyle: true }
+        },
+        tooltip: {
+          backgroundColor: colors.tooltipBg,
+          titleColor: colors.tooltipText,
+          bodyColor: colors.tooltipText,
+          padding: 12,
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${money(ctx.raw)}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: colors.gridColor, drawBorder: false },
+          ticks: { color: colors.textColor, font: { size: 11 } }
+        },
+        y: {
+          grid: { color: colors.gridColor, drawBorder: false },
+          ticks: {
+            color: colors.textColor,
+            font: { size: 11 },
+            callback: v => money(v)
+          },
+          beginAtZero: true
+        }
+      }
+    }
+  });
+}
+
+function createIncomeExpenseBarChart(ctx, agg) {
+  const colors = getChartColors();
+
+  return new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['Pemasukan', 'Pengeluaran', 'Saldo'],
+      datasets: [{
+        label: 'Jumlah (Rp)',
+        data: [agg.income, agg.expense, agg.net],
+        backgroundColor: [
+          'rgba(0, 122, 51, 0.8)',
+          'rgba(179, 66, 47, 0.8)',
+          agg.net >= 0 ? 'rgba(0, 77, 0, 0.8)' : 'rgba(179, 66, 47, 0.8)'
+        ],
+        borderRadius: 12,
+        borderSkipped: false,
+        maxBarThickness: 60
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      indexAxis: 'y',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: colors.tooltipBg,
+          titleColor: colors.tooltipText,
+          bodyColor: colors.tooltipText,
+          padding: 12,
+          callbacks: {
+            label: ctx => money(ctx.raw)
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: colors.gridColor, drawBorder: false },
+          ticks: {
+            color: colors.textColor,
+            font: { size: 11 },
+            callback: v => money(v)
+          },
+          beginAtZero: true
+        },
+        y: {
+          grid: { display: false },
+          ticks: { color: colors.textColor, font: { size: 12, weight: '600', family: 'Plus Jakarta Sans' } }
+        }
+      }
+    }
+  });
+}
+
+function initCharts(agg) {
+  // Small delay to ensure canvas elements are in DOM
+  setTimeout(() => {
+    const pieCtx = document.getElementById('categoryPieChart');
+    const trendCtx = document.getElementById('monthlyTrendChart');
+    const barCtx = document.getElementById('incomeExpenseBarChart');
+
+    if (pieCtx) categoryPieChart = createCategoryPieChart(pieCtx.getContext('2d'), agg);
+    if (trendCtx) monthlyTrendChart = createMonthlyTrendChart(trendCtx.getContext('2d'), transactions);
+    if (barCtx) incomeExpenseBarChart = createIncomeExpenseBarChart(barCtx.getContext('2d'), agg);
+  }, 0);
+}
+
+function updateCharts(agg) {
+  // Update pie chart
+  if (categoryPieChart && agg.categories.length) {
+    const labels = agg.categories.slice(0, 6).map(([cat]) => cat);
+    const data = agg.categories.slice(0, 6).map(([, amt]) => amt);
+    categoryPieChart.data.labels = labels;
+    categoryPieChart.data.datasets[0].data = data;
+    categoryPieChart.update();
+  }
+
+  // Update bar chart
+  if (incomeExpenseBarChart) {
+    incomeExpenseBarChart.data.datasets[0].data = [agg.income, agg.expense, agg.net];
+    incomeExpenseBarChart.data.datasets[0].backgroundColor = [
+      'rgba(0, 122, 51, 0.8)',
+      'rgba(179, 66, 47, 0.8)',
+      agg.net >= 0 ? 'rgba(0, 77, 0, 0.8)' : 'rgba(179, 66, 47, 0.8)'
+    ];
+    incomeExpenseBarChart.update();
+  }
+
+  // Trend chart needs full rebuild for different period - just rebuild it
+  if (monthlyTrendChart) {
+    monthlyTrendChart.destroy();
+    const trendCtx = document.getElementById('monthlyTrendChart');
+    if (trendCtx) monthlyTrendChart = createMonthlyTrendChart(trendCtx.getContext('2d'), transactions);
+  }
+}
+
+// Dark Mode Functions
+function initTheme() {
+  const savedTheme = localStorage.getItem('theme');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = savedTheme === 'dark' || (!savedTheme && prefersDark);
+  if (isDark) document.documentElement.classList.add('dark');
+  else document.documentElement.classList.remove('dark');
+}
+
+function toggleTheme() {
+  const isDark = document.documentElement.classList.toggle('dark');
+  localStorage.setItem('theme', isDark ? 'dark' : 'light');
+
+  // Update theme toggle button
+  const themeBtn = $('#themeToggle');
+  if (themeBtn) {
+    themeBtn.innerHTML = `<span>${isDark ? '☀️' : '🌙'}</span><span style="font-size:11px;display:none">${isDark ? 'Terang' : 'Gelap'}</span>`;
+    themeBtn.setAttribute('aria-label', isDark ? 'Mode terang' : 'Mode gelap');
+    themeBtn.setAttribute('title', isDark ? 'Mode terang' : 'Mode gelap');
+  }
+
+  // Re-render charts with new colors if on dashboard
+  if (currentTab === 'ringkasan') {
+    const agg = aggregate(transactions, currentPeriod);
+    updateCharts(agg);
+  }
+}
+
+// Initialize theme immediately
+initTheme();
+
+// Listen for system theme changes
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+  if (!localStorage.getItem('theme')) {
+    if (e.matches) document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
+
+    // Re-render charts with new colors if on dashboard
+    if (currentTab === 'ringkasan') {
+      const agg = aggregate(transactions, currentPeriod);
+      updateCharts(agg);
+    }
+  }
+});
+
+// -------------------------------------------------------------
 // RENDER NAVIGATION
 // -------------------------------------------------------------
 function renderNav() {
   const nav = $('#nav');
   if (!nav) return;
 
+  const isDark = document.documentElement.classList.contains('dark');
+
   nav.innerHTML = `
     <span class="brand">finance<span style="color:var(--g)">tracker.</span></span>
-    
+
     <button class="t ${currentTab === 'ringkasan' ? 'on' : ''}" data-tab="ringkasan">
       <span>📊</span>
       Ringkasan
     </button>
-    
+
     <button class="t ${currentTab === 'transaksi' ? 'on' : ''}" data-tab="transaksi">
       <span>💳</span>
       Transaksi
     </button>
-    
+
+    <button class="t ${currentTab === 'tagihan' ? 'on' : ''}" data-tab="tagihan">
+      <span>📅</span>
+      Tagihan
+    </button>
+
     <button class="fab" id="fabAdd" aria-label="Tambah Transaksi">
       <i>+</i>
       <b>+ Catat</b>
     </button>
-    
+
     <button class="t ${currentTab === 'nota' ? 'on' : ''}" data-tab="nota">
       <span>🧾</span>
       Pindai Nota
     </button>
-    
+
     <button class="t ${currentTab === 'data' ? 'on' : ''}" data-tab="data">
       <span>⚙️</span>
       Kelola Data
     </button>
+
+    <button class="t theme-toggle" id="themeToggle" aria-label="${isDark ? 'Mode terang' : 'Mode gelap'}" title="${isDark ? 'Mode terang' : 'Mode gelap'}">
+      <span>${isDark ? '☀️' : '🌙'}</span>
+      <span style="font-size:11px;display:none">${isDark ? 'Terang' : 'Gelap'}</span>
+    </button>
   `;
 
-  nav.querySelectorAll('.t').forEach(b => {
+  nav.querySelectorAll('.t[data-tab]').forEach(b => {
     b.onclick = () => {
       currentTab = b.dataset.tab;
       render();
@@ -316,12 +782,22 @@ function renderNav() {
 
   const fab = $('#fabAdd');
   if (fab) fab.onclick = () => openTxModal();
+
+  const themeBtn = $('#themeToggle');
+  if (themeBtn) {
+    themeBtn.onclick = () => toggleTheme();
+  }
 }
 
 // -------------------------------------------------------------
 // MAIN VIEWS
 // -------------------------------------------------------------
 function render() {
+  // Destroy charts when switching away from dashboard
+  if (currentTab !== 'ringkasan') {
+    destroyCharts();
+  }
+
   renderNav();
   const view = $('#view');
   if (!view) return;
@@ -329,9 +805,15 @@ function render() {
   switch (currentTab) {
     case 'ringkasan':
       view.innerHTML = renderDashboard();
+      // Initialize charts after DOM is ready
+      const agg = aggregate(transactions, currentPeriod);
+      initCharts(agg);
       break;
     case 'transaksi':
       view.innerHTML = renderTransactions();
+      break;
+    case 'tagihan':
+      view.innerHTML = renderRecurringBills();
       break;
     case 'nota':
       view.innerHTML = renderReceiptScanner();
@@ -341,6 +823,8 @@ function render() {
       break;
     default:
       view.innerHTML = renderDashboard();
+      const agg2 = aggregate(transactions, currentPeriod);
+      initCharts(agg2);
   }
 
   attachViewListeners();
@@ -351,21 +835,13 @@ function renderDashboard() {
   const agg = aggregate(transactions, currentPeriod);
   const recent = [...transactions].sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 5);
 
-  let categoryBars = '';
-  if (agg.categories.length) {
-    const totalExp = agg.expense || 1;
-    categoryBars = agg.categories.slice(0, 4).map(([cat, amt]) => {
-      const pct = Math.min(100, Math.round((amt / totalExp) * 100));
-      return `
-        <div class="bar">
-          <div><span>${esc(cat)}</span><b>${money(amt)} (${pct}%)</b></div>
-          <i><b style="width: ${pct}%"></b></i>
-        </div>
-      `;
-    }).join('');
-  } else {
-    categoryBars = `<p class="muted" style="margin: 8px 0;">Belum ada pengeluaran pada periode ini.</p>`;
-  }
+  // Calculate insights
+  const savingsRate = agg.income > 0 ? Math.round((agg.net / agg.income) * 100) : 0;
+  const daysInPeriod = getDaysInPeriod(currentPeriod);
+  const dailyAvgExpense = daysInPeriod > 0 ? Math.round(agg.expense / daysInPeriod) : 0;
+  const topExpenseDay = getTopExpenseDay(transactions, currentPeriod);
+  const upcomingBills = recurringBills.filter(b => b.status === 'active' && b.nextDue >= today()).sort((a, b) => a.nextDue.localeCompare(b.nextDue)).slice(0, 3);
+  const largeTransactions = [...transactions].filter(t => t.type === 'Pengeluaran' && (t.status === 'active' || !t.status) && t.date >= agg.period.start && t.date <= agg.period.end).sort((a, b) => b.amount - a.amount).slice(0, 3);
 
   let txList = '';
   if (recent.length) {
@@ -378,6 +854,54 @@ function renderDashboard() {
         <small>Klik tombol <strong>+ Catat</strong> di bawah atau pindai nota.</small>
       </div>
     `;
+  }
+
+  // Upcoming bills HTML
+  let upcomingBillsHtml = '';
+  if (upcomingBills.length) {
+    upcomingBillsHtml = upcomingBills.map(bill => {
+      const isOverdue = bill.nextDue < today();
+      const daysLeft = Math.ceil((new Date(bill.nextDue + 'T12:00:00Z') - new Date(today() + 'T12:00:00Z')) / (1000 * 60 * 60 * 24));
+      return `
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--l);">
+          <div>
+            <b>${esc(bill.name)}</b>
+            <small style="display:block;color:var(--mut)">${esc(bill.merchant)} · ${money(bill.amount)} · ${isOverdue ? 'Terlambat' : daysLeft === 0 ? 'Hari ini' : `${daysLeft} hari lagi`}</small>
+          </div>
+          <span class="pill ${isOverdue ? 'b' : 'w'}">${formatDateShort(bill.nextDue)}</span>
+        </div>
+      `;
+    }).join('');
+  } else {
+    upcomingBillsHtml = '<p class="muted" style="text-align:center;padding:16px 0">Tidak ada tagihan mendatang</p>';
+  }
+
+  // Large transactions HTML
+  let largeTxHtml = '';
+  if (largeTransactions.length) {
+    largeTxHtml = largeTransactions.map(t => `
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--l);">
+        <div>
+          <b>${esc(t.merchant)}</b>
+          <small style="display:block;color:var(--mut)">${esc(t.category)} · ${formatDateIndo(t.date)}</small>
+        </div>
+        <span class="amt" style="color:var(--red)">−${money(t.amount)}</span>
+      </div>
+    `).join('');
+  } else {
+    largeTxHtml = '<p class="muted" style="text-align:center;padding:16px 0">Belum ada pengeluaran besar</p>';
+  }
+
+  // Insights
+  const insights = generateInsights(agg, transactions, currentPeriod);
+  let insightsHtml = '';
+  if (insights.length) {
+    insightsHtml = insights.map(i => `
+      <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--l);">
+        <span style="font-size:20px;flex:none">${i.icon}</span>
+        <div style="flex:1"><b>${i.title}</b><small style="display:block;color:var(--mut)">${i.desc}</small></div>
+      </div>
+    `).join('');
   }
 
   return `
@@ -414,13 +938,102 @@ function renderDashboard() {
       </div>
     </div>
 
-    <!-- Category Breakdown Card -->
+    <!-- Quick Stats Grid -->
+    <div class="stats-grid">
+      <div class="card stat-card">
+        <div class="stat-icon">💰</div>
+        <div>
+          <small>Tingkat Tabungan</small>
+          <b style="color:${savingsRate >= 20 ? 'var(--g)' : savingsRate >= 0 ? 'var(--mut)' : 'var(--red)'}">${savingsRate >= 0 ? '+' : ''}${savingsRate}%</b>
+        </div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon">📅</div>
+        <div>
+          <small>Rata-rata/Hari</small>
+          <b>${money(dailyAvgExpense)}</b>
+        </div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon">🏆</div>
+        <div>
+          <small>Hari Belanja Terbesar</small>
+          <b>${topExpenseDay.day || '—'}</b>
+        </div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon">📅</div>
+        <div>
+          <small>Tagihan Mendatang</small>
+          <b>${upcomingBills.length}</b>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="charts-grid">
+      <!-- Category Pie Chart -->
+      <div class="card chart-card">
+        <div class="row-h">
+          <h2>Komposisi Pengeluaran</h2>
+        </div>
+        ${agg.categories.length ? `
+          <div class="chart-wrapper">
+            <canvas id="categoryPieChart" height="200"></canvas>
+          </div>
+        ` : `
+          <p class="muted" style="margin: 24px 0; text-align: center;">Belum ada pengeluaran pada periode ini.</p>
+        `}
+      </div>
+
+      <!-- Income vs Expense Bar Chart -->
+      <div class="card chart-card">
+        <div class="row-h">
+          <h2>Pemasukan vs Pengeluaran</h2>
+        </div>
+        <div class="chart-wrapper">
+          <canvas id="incomeExpenseBarChart" height="200"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Monthly Trend Chart -->
     <div class="card">
       <div class="row-h">
-        <h2>Kategori Terbesar</h2>
-        <a class="lnk" href="#transaksi" id="btnSeeAllCat">Lihat Semua ↗</a>
+        <h2>Tren 6 Bulan Terakhir</h2>
       </div>
-      ${categoryBars}
+      <div class="chart-wrapper">
+        <canvas id="monthlyTrendChart" height="220"></canvas>
+      </div>
+    </div>
+
+    <!-- Insights & Upcoming Bills Row -->
+    <div class="charts-grid">
+      <!-- Insights -->
+      <div class="card">
+        <div class="row-h">
+          <h2>💡 Insight & Tips</h2>
+        </div>
+        ${insightsHtml || '<p class="muted" style="text-align:center;padding:16px 0">Catat lebih banyak transaksi untuk mendapatkan insight</p>'}
+      </div>
+
+      <!-- Upcoming Bills -->
+      <div class="card">
+        <div class="row-h">
+          <h2>📅 Tagihan Mendatang</h2>
+          <a class="lnk" href="#tagihan" id="btnSeeAllBills" style="font-size:13px">Lihat Semua ↗</a>
+        </div>
+        ${upcomingBillsHtml}
+      </div>
+    </div>
+
+    <!-- Large Transactions -->
+    <div class="card">
+      <div class="row-h">
+        <h2>💸 Pengeluaran Terbesar</h2>
+        <a class="lnk" href="#transaksi" id="btnSeeAllLargeTx" style="font-size:13px">Lihat Semua ↗</a>
+      </div>
+      ${largeTxHtml}
     </div>
 
     <!-- Recent Transactions -->
@@ -434,6 +1047,87 @@ function renderDashboard() {
       </div>
     </div>
   `;
+}
+
+// Helper functions for dashboard insights
+function getDaysInPeriod(code) {
+  const p = periodCode(code);
+  if (code === 'all') return 365;
+  const start = new Date(p.start + 'T12:00:00Z');
+  const end = new Date(p.end + 'T12:00:00Z');
+  return Math.max(1, Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1);
+}
+
+function getTopExpenseDay(transactions, code) {
+  const p = periodCode(code);
+  const dayExpenses = {};
+  for (const t of transactions) {
+    if ((t.status === 'active' || !t.status) && t.type === 'Pengeluaran' && t.date >= p.start && t.date <= p.end) {
+      dayExpenses[t.date] = (dayExpenses[t.date] || 0) + t.amount;
+    }
+  }
+  let topDay = '', topAmount = 0;
+  for (const [day, amt] of Object.entries(dayExpenses)) {
+    if (amt > topAmount) {
+      topAmount = amt;
+      topDay = day;
+    }
+  }
+  return topDay ? { day: formatDateIndo(topDay), amount: topAmount } : { day: null, amount: 0 };
+}
+
+function generateInsights(agg, transactions, code) {
+  const insights = [];
+  const p = periodCode(code);
+
+  // Savings rate insight
+  if (agg.income > 0) {
+    const savingsRate = Math.round((agg.net / agg.income) * 100);
+    if (savingsRate >= 20) {
+      insights.push({ icon: '🎉', title: 'Tabungan Sehat!', desc: `Kamu menabung ${savingsRate}% dari pemasukan. Pertahankan!` });
+    } else if (savingsRate >= 10) {
+      insights.push({ icon: '👍', title: 'Tabungan Lumayan', desc: `Tingkat tabungan ${savingsRate}% - coba targetkan 20%+.` });
+    } else if (savingsRate >= 0) {
+      insights.push({ icon: '⚠️', title: 'Tabungan Tipis', desc: `Hanya ${savingsRate}% tersisa. Pertimbangkan kurangi pengeluaran non-esensial.` });
+    } else {
+      insights.push({ icon: '🚨', title: 'Defisit Bulanan', desc: `Pengeluaran melebihi pemasukan ${money(Math.abs(agg.net))}. Perlu evaluasi mendesak.` });
+    }
+  }
+
+  // Category concentration
+  if (agg.categories.length > 0) {
+    const [topCat, topAmt] = agg.categories[0];
+    const pct = Math.round((topAmt / agg.expense) * 100);
+    if (pct > 40) {
+      insights.push({ icon: '📊', title: `Konsentrasi di ${topCat}`, desc: `${pct}% pengeluaran di kategori ini. Apakah bisa dioptimalkan?` });
+    }
+  }
+
+  // Frequency insight
+  const txCount = agg.count;
+  if (txCount > 0) {
+    const avgPerDay = txCount / getDaysInPeriod(code);
+    if (avgPerDay > 3) {
+      insights.push({ icon: '🧾', title: 'Sering Transaksi', desc: `Rata-rata ${avgPerDay.toFixed(1)} transaksi/hari. Pertimbangkan catat sekaligus di akhir hari.` });
+    }
+  }
+
+  // Recurring bills insight
+  const activeBills = recurringBills.filter(b => b.status === 'active');
+  if (activeBills.length > 0) {
+    const totalMonthlyBills = activeBills.reduce((sum, b) => {
+      const days = FREQUENCIES.find(f => f.value === b.frequency)?.days || b.customDays || 30;
+      return sum + (b.amount * 30 / days);
+    }, 0);
+    if (agg.income > 0) {
+      const billRatio = Math.round((totalMonthlyBills / agg.income) * 100);
+      if (billRatio > 50) {
+        insights.push({ icon: '📋', title: 'Beban Tagihan Tinggi', desc: `Tagihan berkala ~${billRatio}% pemasukan. Review langganan yang tidak perlu.` });
+      }
+    }
+  }
+
+  return insights.slice(0, 3);
 }
 
 // 2. Transactions List View
@@ -593,6 +1287,69 @@ function renderDataTools() {
   `;
 }
 
+// 5. Recurring Bills View
+function renderRecurringBills() {
+  let content = '';
+
+  if (!recurringBills.length) {
+    content = `
+      <div class="card">
+        <div class="empty">
+          <div style="font-size: 32px;">📅</div>
+          <b>Belum ada tagihan berkala</b>
+          <small>Tambahkan tagihan yang berulang seperti listrik, internet, cicilan, atau langganan.</small>
+        </div>
+      </div>
+    `;
+  } else {
+    // Sort by next due date
+    const sortedBills = [...recurringBills].sort((a, b) => a.nextDue.localeCompare(b.nextDue));
+    let items = '';
+
+    sortedBills.forEach(bill => {
+      const isOverdue = bill.nextDue < today() && bill.status === 'active';
+      const statusClass = bill.status === 'active' ? (isOverdue ? 'pill b' : 'pill') : 'pill w';
+      const statusText = bill.status === 'active' ? (isOverdue ? 'Jatuh Tempo' : 'Aktif') : 'Dihentikan';
+
+      items += `
+        <button class="tx" data-billid="${esc(bill.id)}" style="justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;">
+            <span class="ico" style="background: var(--p);">📅</span>
+            <div class="tm" style="min-width: 0;">
+              <b>${esc(bill.name)}</b>
+              <small>${esc(bill.merchant)} · ${formatFrequency(bill.frequency, bill.customDays)} · ${money(bill.amount)}</small>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-direction: column;">
+            <span class="${statusClass}">${statusText}</span>
+            <small style="color: var(--mut);">${isOverdue ? 'Terlambat' : 'Berikutnya: ' + formatDateShort(bill.nextDue)}</small>
+          </div>
+        </button>
+      `;
+    });
+
+    content = `
+      <div class="card" style="padding-top: 8px;">
+        ${items}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="hd">
+      <div>
+        <h1>Tagihan Berkala</h1>
+        <small class="muted">${recurringBills.length} tagihan terdaftar</small>
+      </div>
+      <div>
+        <button class="btn pri" id="btnNewBill">+ Tambah Tagihan</button>
+      </div>
+    </div>
+
+    ${content}
+  `;
+}
+
 // -------------------------------------------------------------
 // EVENT LISTENERS & MODALS
 // -------------------------------------------------------------
@@ -601,7 +1358,17 @@ function attachViewListeners() {
   if (pFilter) {
     pFilter.onchange = ev => {
       currentPeriod = ev.target.value;
-      render();
+      const agg = aggregate(transactions, currentPeriod);
+      updateCharts(agg);
+      // Update hero card text
+      const periodLabel = document.querySelector('.hero span');
+      if (periodLabel) periodLabel.textContent = `Selisih Tercatat (${agg.period.label})`;
+      const netEl = document.querySelector('.hero strong');
+      if (netEl) netEl.textContent = `${agg.net < 0 ? '−' : ''}${money(Math.abs(agg.net))}`;
+      const incomeEl = document.querySelector('.hero .duo div:first-child b');
+      if (incomeEl) incomeEl.textContent = money(agg.income);
+      const expenseEl = document.querySelector('.hero .duo div:last-child b');
+      if (expenseEl) expenseEl.textContent = money(agg.expense);
     };
   }
 
@@ -609,6 +1376,12 @@ function attachViewListeners() {
   if (btnAllTx) btnAllTx.onclick = () => { currentTab = 'transaksi'; render(); };
   const btnAllCat = $('#btnSeeAllCat');
   if (btnAllCat) btnAllCat.onclick = () => { currentTab = 'transaksi'; render(); };
+
+  const btnSeeAllBills = $('#btnSeeAllBills');
+  if (btnSeeAllBills) btnSeeAllBills.onclick = () => { currentTab = 'tagihan'; render(); };
+
+  const btnSeeAllLargeTx = $('#btnSeeAllLargeTx');
+  if (btnSeeAllLargeTx) btnSeeAllLargeTx.onclick = () => { currentTab = 'transaksi'; render(); };
 
   const btnNew = $('#btnNewTx');
   if (btnNew) btnNew.onclick = () => openTxModal();
@@ -770,6 +1543,18 @@ function attachViewListeners() {
       }
     };
   }
+
+  // Recurring Bills handlers
+  const btnNewBill = $('#btnNewBill');
+  if (btnNewBill) btnNewBill.onclick = () => openBillModal();
+
+  $$('.tx[data-billid]').forEach(b => {
+    b.onclick = () => {
+      const id = b.dataset.billid;
+      const bill = recurringBills.find(x => x.id === id);
+      if (bill) openBillModal(bill);
+    };
+  });
 }
 
 // -------------------------------------------------------------
@@ -938,6 +1723,195 @@ function openTxModal(tx = null) {
 }
 
 // -------------------------------------------------------------
+// RECURRING BILL FORM DIALOG (#dlg)
+// -------------------------------------------------------------
+function openBillModal(bill = null) {
+  const dlg = $('#dlg');
+  if (!dlg) return;
+
+  const editingBill = bill ? { ...bill } : {
+    id: uuid(),
+    name: '',
+    merchant: '',
+    amount: 0,
+    category: 'Tagihan',
+    frequency: 'monthly',
+    customDays: null,
+    payment: 'Tunai',
+    nextDue: today(),
+    status: 'active',
+    createdAt: Date.now()
+  };
+
+  const isEdit = !!bill;
+
+  dlg.innerHTML = `
+    <div class="mh">
+      <h2>${isEdit ? 'Ubah Tagihan' : 'Tambah Tagihan Berkala'}</h2>
+      <button class="x" id="closeDlg" aria-label="Tutup">✕</button>
+    </div>
+
+    <div>
+      <label>Nama Tagihan</label>
+      <input type="text" id="billName" placeholder="Misal: Listrik PLN, Internet Indihome, Cicilan Motor, Netflix" value="${esc(editingBill.name)}">
+    </div>
+
+    <div>
+      <label>Merchant / Penyedia</label>
+      <input type="text" id="billMerchant" placeholder="Misal: PLN, Telkomsel, Bank BCA, Netflix" value="${esc(editingBill.merchant)}">
+    </div>
+
+    <div>
+      <label>Nominal (Rp)</label>
+      <input type="text" id="billAmount" class="big-in" placeholder="0" value="${editingBill.amount ? editingBill.amount.toLocaleString('id-ID') : ''}">
+    </div>
+
+    <div class="two">
+      <div>
+        <label>Kategori</label>
+        <select id="billCategory">
+          ${CATEGORIES.map(c => `
+            <option value="${esc(c)}" ${editingBill.category === c ? 'selected' : ''}>${esc(c)}</option>
+          `).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Metode Pembayaran</label>
+        <select id="billPayment">
+          ${PAY_METHODS.map(p => `
+            <option value="${esc(p)}" ${editingBill.payment === p ? 'selected' : ''}>${esc(p)}</option>
+          `).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div>
+      <label>Frekuensi</label>
+      <select id="billFrequency">
+        ${FREQUENCIES.map(f => `
+          <option value="${f.value}" ${editingBill.frequency === f.value ? 'selected' : ''}>${f.label}</option>
+        `).join('')}
+      </select>
+    </div>
+
+    <div id="customDaysContainer" style="display: ${editingBill.frequency === 'custom' ? 'block' : 'none'};">
+      <label>Jumlah Hari (Kustom)</label>
+      <input type="number" id="billCustomDays" min="1" max="365" placeholder="Misal: 14" value="${editingBill.customDays || ''}">
+    </div>
+
+    <div class="two">
+      <div>
+        <label>Tanggal Jatuh Tempo Berikutnya</label>
+        <input type="date" id="billNextDue" value="${esc(editingBill.nextDue || today())}">
+      </div>
+      <div>
+        <label>Status</label>
+        <select id="billStatus">
+          <option value="active" ${editingBill.status === 'active' ? 'selected' : ''}>Aktif</option>
+          <option value="inactive" ${editingBill.status === 'inactive' ? 'selected' : ''}>Dihentikan</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="dlgErr" class="err" style="display: none;"></div>
+
+    <div class="mf">
+      ${isEdit ? `<button class="btn danger" id="dlgDeleteBill" style="margin-right: auto;">Hapus</button>` : ''}
+      <button class="btn ghost" id="dlgCancel">Batal</button>
+      <button class="btn pri" id="dlgSaveBill">Simpan</button>
+    </div>
+  `;
+
+  $('#closeDlg').onclick = () => dlg.close();
+  $('#dlgCancel').onclick = () => dlg.close();
+
+  if ($('#dlgDeleteBill')) {
+    $('#dlgDeleteBill').onclick = async () => {
+      if (confirm('Hapus tagihan berkala ini?')) {
+        await deleteRecurringBill(editingBill.id);
+        recurringBills = recurringBills.filter(b => b.id !== editingBill.id);
+        dlg.close();
+        render();
+        showToast('Tagihan dihapus.');
+      }
+    };
+  }
+
+  const freqSelect = $('#billFrequency');
+  const customDaysContainer = $('#customDaysContainer');
+  if (freqSelect && customDaysContainer) {
+    freqSelect.onchange = () => {
+      customDaysContainer.style.display = freqSelect.value === 'custom' ? 'block' : 'none';
+    };
+  }
+
+  const amtInput = $('#billAmount');
+  if (amtInput) {
+    amtInput.oninput = () => {
+      let raw = amtInput.value.replace(/[^0-9]/g, '');
+      if (raw) {
+        amtInput.value = Number(raw).toLocaleString('id-ID');
+      }
+    };
+  }
+
+  $('#dlgSaveBill').onclick = async () => {
+    const errBox = $('#dlgErr');
+    errBox.style.display = 'none';
+
+    try {
+      const name = $('#billName').value.trim();
+      const merchant = $('#billMerchant').value.trim();
+      const rawAmt = $('#billAmount').value.trim();
+      const numAmt = parseAmount(rawAmt || '0');
+      const category = $('#billCategory').value;
+      const frequency = $('#billFrequency').value;
+      const customDays = frequency === 'custom' ? parseInt($('#billCustomDays').value || '0') : null;
+      const payment = $('#billPayment').value;
+      const nextDue = parseDate($('#billNextDue').value || today());
+      const status = $('#billStatus').value;
+
+      if (!name) throw Error('Nama tagihan wajib diisi.');
+      if (!merchant) throw Error('Merchant/penyedia wajib diisi.');
+      if (!numAmt || numAmt <= 0) throw Error('Nominal harus angka positif.');
+      if (frequency === 'custom' && (!customDays || customDays < 1)) throw Error('Jumlah hari kustom minimal 1.');
+
+      const record = {
+        ...editingBill,
+        name,
+        merchant,
+        amount: numAmt,
+        category,
+        frequency,
+        customDays,
+        payment,
+        nextDue,
+        status,
+        updatedAt: Date.now()
+      };
+
+      await saveRecurringBill(record);
+
+      const idx = recurringBills.findIndex(b => b.id === record.id);
+      if (idx >= 0) {
+        recurringBills[idx] = record;
+      } else {
+        recurringBills.unshift(record);
+      }
+
+      dlg.close();
+      render();
+      showToast('✅ Tagihan berkala berhasil disimpan!');
+    } catch (e) {
+      errBox.textContent = e.message;
+      errBox.style.display = 'block';
+    }
+  };
+
+  dlg.showModal();
+}
+
+// -------------------------------------------------------------
 // SEED DEFAULT TRANSACTIONS
 // -------------------------------------------------------------
 async function seedDefaultDataIfEmpty() {
@@ -966,11 +1940,15 @@ render();
 initDB().then(async d => {
   db = d;
   transactions = await loadTransactions();
+  recurringBills = await loadRecurringBills();
+  checkAndGenerateRecurringTransactions();
   await seedDefaultDataIfEmpty();
   render();
 }).catch(async err => {
   console.warn('DB fallback to memory:', err);
   transactions = await loadTransactions();
+  recurringBills = await loadRecurringBills();
+  checkAndGenerateRecurringTransactions();
   await seedDefaultDataIfEmpty();
   render();
 });
