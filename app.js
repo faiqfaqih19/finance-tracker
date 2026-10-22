@@ -164,8 +164,7 @@ let currentPeriod = 'month';
 let selectedCategory = '';
 let searchQuery = '';
 let editingTx = null;
-const DEFAULT_SYNC_TOKEN = 'finance-tracker-pribadi-token-2026-faiq';
-let syncToken = localStorage.getItem('finance-sync-token') || DEFAULT_SYNC_TOKEN;
+let syncToken = localStorage.getItem('finance-sync-token') || '';
 let syncState = 'connecting';
 let lastSyncAt = 0;
 let syncTimer = null;
@@ -303,7 +302,8 @@ function syncConnected() {
 const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwzt7lnCNjpkL8ureMnhv_6i5EFEvs-8SA4f9E1Wv76tcDRtGTOxfxROGsZUHzJAULyFw/exec';
 
 async function syncRequest(action, payload = {}) {
-  const activeToken = syncToken || DEFAULT_SYNC_TOKEN;
+  const activeToken = syncToken;
+  if (!activeToken) throw new Error('Hubungkan aplikasi melalui bot Telegram terlebih dahulu.');
 
   // 1. Coba lewat proxy /api/sync jika ada (misal di Vercel / server lokal)
   try {

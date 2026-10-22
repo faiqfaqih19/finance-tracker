@@ -26,8 +26,8 @@ const GEMINI_FALLBACK_MODELS = [
   "gemini-flash-latest"
 ];
 
-// Token sinkronisasi standar untuk Web App pribadi (cocokkan dengan app.js)
-const DEFAULT_SYNC_TOKEN = "finance-tracker-pribadi-token-2026-faiq";
+// Versi token dipakai untuk merotasi token lama yang pernah tertanam di source.
+const SYNC_TOKEN_VERSION = "2";
 
 // URL Web App Finance Tracker di Vercel
 const DEFAULT_WEB_APP_URL = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL') || "https://finance-tracker-ruby-beta.vercel.app/";
@@ -82,9 +82,8 @@ function setup() {
   sheet.setFrozenRows(1);
 
   // Pastikan token sinkronisasi dibuat
-  const token = getOrCreateSyncToken();
+  getOrCreateSyncToken();
   Logger.log("✅ Sheet 'Transaksi' berhasil disiapkan!");
-  Logger.log("🔑 Sync Token Anda: " + token);
 }
 
 /**
@@ -104,14 +103,13 @@ function doGet(e) {
   // Dukungan langsung untuk action=list via GET agar bebas kendala CORS di browser
   const action = e && e.parameter && (e.parameter.action || (e.parameter.api === 'sync' && e.parameter.action));
   if (action === 'list') {
-    return handleSyncApi({ action: 'list', token: e.parameter.token || DEFAULT_SYNC_TOKEN }, e);
+    return handleSyncApi({ action: 'list', token: e.parameter.token || '' }, e);
   }
 
   return ContentService.createTextOutput(JSON.stringify({
     ok: true,
     service: "Finance Tracker Telegram & Web Sync API",
     model: GEMINI_MODEL,
-    sync_token: DEFAULT_SYNC_TOKEN,
     timestamp: new Date().toISOString()
   })).setMimeType(ContentService.MimeType.JSON);
 }
@@ -780,9 +778,13 @@ function getColumnMap(sheet) {
 function getOrCreateSyncToken() {
   const props = PropertiesService.getScriptProperties();
   let token = props.getProperty('SYNC_TOKEN');
-  if (!token || token.length < 32) {
-    token = DEFAULT_SYNC_TOKEN;
-    props.setProperty('SYNC_TOKEN', token);
+  const tokenVersion = props.getProperty('SYNC_TOKEN_VERSION');
+  if (!token || token.length < 32 || tokenVersion !== SYNC_TOKEN_VERSION) {
+    token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+    props.setProperties({
+      SYNC_TOKEN: token,
+      SYNC_TOKEN_VERSION: SYNC_TOKEN_VERSION
+    });
   }
   return token;
 }
@@ -790,7 +792,6 @@ function getOrCreateSyncToken() {
 function isValidToken(clientToken) {
   if (!clientToken || typeof clientToken !== 'string') return false;
   const trimmed = clientToken.trim();
-  if (trimmed === DEFAULT_SYNC_TOKEN) return true;
   const serverToken = getOrCreateSyncToken();
   return trimmed === serverToken.trim();
 }
