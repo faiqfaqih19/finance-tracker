@@ -12,8 +12,19 @@
 const TELEGRAM_BOT_TOKEN = PropertiesService.getScriptProperties().getProperty('TELEGRAM_BOT_TOKEN') || "YOUR_TELEGRAM_BOT_TOKEN";
 const GEMINI_API_KEY     = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY') || "YOUR_GEMINI_API_KEY";
 
-// Model Gemini (gemini-3.8-flash adalah model aktif terbaru yang cepat & akurat)
+// GEMINI_MODEL tetap didukung sebagai pilihan utama. Jika model itu sudah pensiun
+// atau sedang sibuk, aplikasi otomatis mencoba model Flash stabil lain yang
+// tersedia untuk API key ini.
 const GEMINI_MODEL       = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || "gemini-3.8-flash";
+const GEMINI_FALLBACK_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest"
+];
 
 // Token sinkronisasi standar untuk Web App pribadi (cocokkan dengan app.js)
 const DEFAULT_SYNC_TOKEN = "finance-tracker-pribadi-token-2026-faiq";
@@ -499,30 +510,7 @@ function analyzeWithGeminiVision(imageBlob, userCaption) {
     }
   };
 
-  const response = UrlFetchApp.fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify(requestBody),
-      muteHttpExceptions: true
-    }
-  );
-
-  const responseText = response.getContentText();
-  const jsonResponse = JSON.parse(responseText);
-
-  if (jsonResponse.error) {
-    throw new Error(jsonResponse.error.message || "Gemini API Error");
-  }
-
-  if (!jsonResponse.candidates || !jsonResponse.candidates[0] || !jsonResponse.candidates[0].content) {
-    throw new Error("Respon tidak valid dari Gemini.");
-  }
-
-  let textOutput = jsonResponse.candidates[0].content.parts[0].text;
-  textOutput = textOutput.replace(/```json/gi, '').replace(/```/gi, '').trim();
-  return JSON.parse(textOutput);
+  return generateGeminiJson(requestBody);
 }
 
 /**
@@ -551,24 +539,146 @@ function analyzeWithGeminiText(text) {
     generationConfig: { response_mime_type: "application/json" }
   };
 
-  const response = UrlFetchApp.fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify(requestBody),
-      muteHttpExceptions: true
-    }
-  );
+  return generateGeminiJson(requestBody);
+}
 
-  const jsonResponse = JSON.parse(response.getContentText());
-  if (jsonResponse.error) {
-    throw new Error(jsonResponse.error.message || "Gemini API Error");
+/**
+ * Memanggil Gemini dengan fallback model dan retry terbatas.
+ * - 404: model sudah tidak tersedia, langsung coba model berikutnya.
+ * - 429/5xx: tunggu singkat lalu coba sekali lagi, kemudian pindah model.
+ * API key dikirim lewat header supaya tidak ikut tertulis di URL/log.
+ */
+function generateGeminiJson(requestBody) {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_API_KEY") {
+    throw new Error("Kunci Gemini belum dikonfigurasi di Script Properties.");
   }
 
-  let textOutput = jsonResponse.candidates[0].content.parts[0].text;
-  textOutput = textOutput.replace(/```json/gi, '').replace(/```/gi, '').trim();
-  return JSON.parse(textOutput);
+  const models = getGeminiModelCandidates();
+  let lastStatus = 0;
+
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
+    const model = models[modelIndex];
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = UrlFetchApp.fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: "post",
+          contentType: "application/json",
+          headers: { "x-goog-api-key": GEMINI_API_KEY },
+          payload: JSON.stringify(requestBody),
+          muteHttpExceptions: true
+        }
+      );
+
+      const status = response.getResponseCode();
+      lastStatus = status;
+
+      if (status >= 200 && status < 300) {
+        const parsed = parseGeminiJsonResponse(response.getContentText());
+        CacheService.getScriptCache().put("GEMINI_WORKING_MODEL", model, 21600);
+        return parsed;
+      }
+
+      if (status === 404 || status === 400) break;
+
+      const temporary = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+      if (temporary && attempt === 0) {
+        Utilities.sleep(700 + (modelIndex * 150));
+        continue;
+      }
+
+      if (temporary) break;
+      throw new Error("Gemini menolak permintaan (HTTP " + status + "). Periksa konfigurasi API di Script Properties.");
+    }
+  }
+
+  if (lastStatus === 429) {
+    throw new Error("Kuota AI sedang dibatasi. Coba kirim lagi beberapa saat lagi.");
+  }
+  if (lastStatus >= 500) {
+    throw new Error("Layanan AI sedang sibuk. Semua model cadangan sudah dicoba; silakan kirim lagi sebentar lagi.");
+  }
+  throw new Error("Tidak ada model Gemini yang tersedia untuk membaca transaksi ini.");
+}
+
+function parseGeminiJsonResponse(responseText) {
+  let payload;
+  try {
+    payload = JSON.parse(responseText);
+  } catch (err) {
+    throw new Error("Gemini mengirim respons yang tidak dapat dibaca.");
+  }
+
+  const parts = payload && payload.candidates && payload.candidates[0] &&
+    payload.candidates[0].content && payload.candidates[0].content.parts;
+  const textParts = (parts || []).filter(function(part) {
+    return part && typeof part.text === "string";
+  }).map(function(part) { return part.text; });
+  if (!textParts.length) {
+    throw new Error("Gemini tidak mengembalikan data transaksi.");
+  }
+
+  const cleanText = textParts.join("").replace(/```json/gi, "").replace(/```/g, "").trim();
+  try {
+    return JSON.parse(cleanText);
+  } catch (err) {
+    throw new Error("Format hasil Gemini tidak valid. Silakan kirim ulang bukti transaksi.");
+  }
+}
+
+function getGeminiModelCandidates() {
+  const preferred = [];
+  const cached = CacheService.getScriptCache().get("GEMINI_WORKING_MODEL");
+  if (cached) preferred.push(cached);
+  if (GEMINI_MODEL) preferred.push(GEMINI_MODEL);
+
+  const configuredFallbacks = PropertiesService.getScriptProperties().getProperty("GEMINI_FALLBACK_MODELS");
+  if (configuredFallbacks) {
+    configuredFallbacks.split(",").forEach(function(model) {
+      if (model.trim()) preferred.push(model.trim());
+    });
+  }
+  GEMINI_FALLBACK_MODELS.forEach(function(model) { preferred.push(model); });
+
+  const available = listAvailableGeminiModels();
+  const unique = preferred.filter(function(model, index, array) {
+    return model && array.indexOf(model) === index;
+  });
+
+  if (!available.length) return unique.slice(0, 6);
+  const supported = unique.filter(function(model) { return available.indexOf(model) !== -1; });
+  return (supported.length ? supported : unique).slice(0, 6);
+}
+
+function listAvailableGeminiModels() {
+  const cache = CacheService.getScriptCache();
+  const cacheKey = "GEMINI_GENERATE_CONTENT_MODELS";
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (err) {}
+  }
+
+  try {
+    const response = UrlFetchApp.fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000", {
+      method: "get",
+      headers: { "x-goog-api-key": GEMINI_API_KEY },
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() !== 200) return [];
+
+    const payload = JSON.parse(response.getContentText());
+    const models = (payload.models || []).filter(function(model) {
+      return (model.supportedGenerationMethods || []).indexOf("generateContent") !== -1;
+    }).map(function(model) {
+      return String(model.name || "").replace(/^models\//, "");
+    }).filter(Boolean);
+
+    cache.put(cacheKey, JSON.stringify(models), 21600);
+    return models;
+  } catch (err) {
+    return [];
+  }
 }
 
 /**
