@@ -26,7 +26,7 @@ const context = {
 };
 
 vm.createContext(context);
-vm.runInContext(source + '\nthis.__test = { sendTransactionCard, normalizeTransactionDate };', context);
+vm.runInContext(source + '\nthis.__test = { sendTransactionCard, normalizeTransactionDate, normalizeNominalValue, getTransactionResponseSchema };', context);
 
 context.__test.sendTransactionCard(123, {
   id: 'TRX-787257688',
@@ -52,5 +52,8 @@ assert.deepEqual(JSON.parse(JSON.stringify(sentPayload.reply_markup.inline_keybo
   { text: 'Batalkan transaksi', callback_data: 'cancel:TRX-787257688' }
 ]);
 assert.equal(context.__test.normalizeTransactionDate('2/10/2026'), '2026-10-02');
+assert.equal(context.__test.normalizeNominalValue('Rp 256.020'), 256020);
+assert.equal(context.__test.normalizeNominalValue('50,000'), 50000);
+assert.equal(context.__test.getTransactionResponseSchema().properties.nominal.type, 'INTEGER');
 
 console.log('Telegram transaction card test passed.');

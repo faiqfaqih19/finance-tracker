@@ -467,12 +467,14 @@ function handleTelegramMessage(message, updateId) {
  */
 function analyzeWithGeminiVision(imageBlob, userCaption) {
   const base64Data = Utilities.base64Encode(imageBlob.getBytes());
-  const mimeType = imageBlob.getContentType();
+  const detectedMimeType = String(imageBlob.getContentType() || "");
+  const mimeType = detectedMimeType.indexOf("image/") === 0 ? detectedMimeType : "image/jpeg";
   const today = Utilities.formatDate(new Date(), "Asia/Jakarta", "yyyy-MM-dd");
 
   const prompt = `
   Anda adalah asisten keuangan pribadi profesional di Indonesia yang sangat teliti.
   Tugas Anda: mengekstrak informasi finansial dari gambar bukti transaksi (struk belanja fisik, invoice, struk EDC, QRIS, mutasi m-Banking BCA/Mandiri/BRI/BNI/BSI, GoPay, OVO, ShopeePay, dll).
+  Nominal wajib diambil dari label Nominal Transaksi/Total/Jumlah Bayar. Contoh Rp 256.020 harus menjadi integer 256020. Abaikan saldo dan nomor referensi.
 
   Hari ini tanggal: ${today}.
   Keterangan tambahan pengguna: "${userCaption}".
@@ -494,16 +496,23 @@ function analyzeWithGeminiVision(imageBlob, userCaption) {
       {
         parts: [
           { text: prompt },
-          { inline_data: { mime_type: mimeType, data: base64Data } }
+          { inlineData: { mimeType: mimeType, data: base64Data } }
         ]
       }
     ],
     generationConfig: {
-      response_mime_type: "application/json"
+      responseMimeType: "application/json",
+      responseSchema: getTransactionResponseSchema(),
+      temperature: 0.1
     }
   };
 
-  return generateGeminiJson(requestBody);
+  const result = generateGeminiJson(requestBody);
+  result.nominal = normalizeNominalValue(result.nominal);
+  if (!result.nominal) {
+    result.nominal = extractNominalFromImage(base64Data, mimeType);
+  }
+  return result;
 }
 
 /**
@@ -529,10 +538,66 @@ function analyzeWithGeminiText(text) {
 
   const requestBody = {
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { response_mime_type: "application/json" }
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: getTransactionResponseSchema(),
+      temperature: 0.1
+    }
   };
 
-  return generateGeminiJson(requestBody);
+  const result = generateGeminiJson(requestBody);
+  result.nominal = normalizeNominalValue(result.nominal);
+  return result;
+}
+
+function getTransactionResponseSchema() {
+  return {
+    type: "OBJECT",
+    properties: {
+      tanggal: { type: "STRING" },
+      jenis: { type: "STRING", enum: ["Pengeluaran", "Pemasukan"] },
+      merchant: { type: "STRING" },
+      kategori: { type: "STRING" },
+      nominal: { type: "INTEGER" },
+      metode: { type: "STRING" },
+      catatan: { type: "STRING" }
+    },
+    required: ["tanggal", "jenis", "merchant", "kategori", "nominal", "metode", "catatan"]
+  };
+}
+
+function extractNominalFromImage(base64Data, mimeType) {
+  const focusedRequest = {
+    contents: [{
+      parts: [
+        {
+          text: "Baca hanya nominal transaksi yang benar-benar dibayar/diterima pada bukti ini. " +
+            "Prioritaskan label Nominal Transaksi, Total, Jumlah Bayar, atau Amount. " +
+            "Abaikan saldo rekening, nomor referensi, nomor transaksi, RRN, dan biaya admin. " +
+            "Kembalikan nominal sebagai bilangan bulat Rupiah tanpa titik, koma, atau simbol."
+        },
+        { inlineData: { mimeType: mimeType, data: base64Data } }
+      ]
+    }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: { nominal: { type: "INTEGER" } },
+        required: ["nominal"]
+      },
+      temperature: 0
+    }
+  };
+  const result = generateGeminiJson(focusedRequest);
+  return normalizeNominalValue(result.nominal);
+}
+
+function normalizeNominalValue(value) {
+  if (typeof value === "number") return value > 0 ? Math.round(value) : 0;
+  const digits = String(value || "").replace(/[^0-9]/g, "");
+  const amount = Number(digits);
+  return isFinite(amount) && amount > 0 ? Math.round(amount) : 0;
 }
 
 /**
