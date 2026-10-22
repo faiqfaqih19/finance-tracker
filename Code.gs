@@ -136,9 +136,15 @@ function doPost(e) {
       return handleSyncApi(payload, e);
     }
 
-    // B. JIKA INI PESAN DARI TELEGRAM WEBHOOK
+    // B. JIKA INI TOMBOL INLINE DARI TELEGRAM
+    if (payload.callback_query) {
+      handleTelegramCallback(payload.callback_query);
+      return HtmlService.createHtmlOutput("OK");
+    }
+
+    // C. JIKA INI PESAN DARI TELEGRAM WEBHOOK
     if (payload.message) {
-      handleTelegramMessage(payload.message);
+      handleTelegramMessage(payload.message, payload.update_id);
       // Gunakan HtmlService agar Telegram menerima HTTP 200 tanpa redirect 302
       return HtmlService.createHtmlOutput("OK");
     }
@@ -340,9 +346,11 @@ function cancelTransaction(sheet, id) {
  * BAGIAN B: HANDLER PESAN TELEGRAM & GEMINI AI
  * =====================================================================
  */
-function handleTelegramMessage(message) {
+function handleTelegramMessage(message, updateId) {
   const chatId = message.chat.id;
   const text = (message.text || '').trim();
+
+  if (text && handlePendingCorrection(chatId, text)) return;
 
   // 1. COMMAND: /start
   if (text === '/start') {
@@ -416,7 +424,6 @@ function handleTelegramMessage(message) {
   }
 
   // 6. PROSES GAMBAR ATAU TEKS TRANSAKSI
-  sendTelegramMessage(chatId, "⏳ Sedang membaca & menganalisis bukti transaksi...");
 
   try {
     let result = null;
@@ -446,21 +453,9 @@ function handleTelegramMessage(message) {
     }
 
     // Simpan transaksi
+    result.id = updateId ? `TRX-${updateId}` : `TRX-${Date.now()}`;
     const saved = saveToSheet(result);
-    const formattedNominal = "Rp " + Number(saved.amount).toLocaleString("id-ID");
-
-    const replyText = 
-      `✅ *Transaksi Berhasil Dicatat!*\n\n` +
-      `📅 *Tanggal:* ${saved.date}\n` +
-      `🏷 *Jenis:* ${saved.type}\n` +
-      `🏪 *Merchant/Pihak:* ${saved.merchant || "-"}\n` +
-      `📂 *Kategori:* ${saved.category || "-"}\n` +
-      `💳 *Metode:* ${saved.payment || "-"}\n` +
-      `💰 *Nominal:* *${formattedNominal}*\n` +
-      `📝 *Catatan:* ${saved.note || "-"}\n\n` +
-      `_Data telah otomatis tersinkron dengan Web App & Google Sheets._`;
-
-    sendTelegramMessage(chatId, replyText, true);
+    sendTransactionCard(chatId, saved);
   } catch (err) {
     Logger.log("Error processing transaction: " + err.toString());
     sendTelegramMessage(chatId, "⚠️ Terjadi kendala saat membaca bukti: " + err.message);
@@ -487,7 +482,7 @@ function analyzeWithGeminiVision(imageBlob, userCaption) {
     "tanggal": "YYYY-MM-DD (ambil tanggal transaksi dari struk, jika tidak terbaca gunakan ${today})",
     "jenis": "Pengeluaran" atau "Pemasukan",
     "merchant": "Nama toko/merchant/pihak tujuan atau pengirim transfer",
-    "kategori": "Pilih satu yang paling cocok dari daftar ini: Makanan & Minuman / Belanja / Transportasi / Kebutuhan Pokok / Tagihan / Kesehatan / Pendidikan / Hiburan / Gaji / Usaha / Lain-lain",
+    "kategori": "Pilih satu yang paling cocok dari daftar ini: Makanan & Minuman / Belanja / Transportasi / Kebutuhan Pokok / Tagihan / Kesehatan / Pendidikan / Hiburan / Donasi / Gaji / Usaha / Lain-lain",
     "nominal": 0 (angka bulat nominal total tanpa titik/koma/Rp),
     "metode": "Pilih satu: QRIS / BCA / Mandiri / BRI / BNI / BSI / GoPay / OVO / DANA / ShopeePay / Tunai / Lainnya",
     "catatan": "Rangkuman barang yang dibeli atau tujuan transfer (singkat)"
@@ -525,7 +520,7 @@ function analyzeWithGeminiText(text) {
     "tanggal": "${today}",
     "jenis": "Pengeluaran" atau "Pemasukan",
     "merchant": "Nama tempat/toko atau pihak terkait",
-    "kategori": "Pilih satu dari: Makanan & Minuman / Belanja / Transportasi / Kebutuhan Pokok / Tagihan / Kesehatan / Pendidikan / Hiburan / Gaji / Usaha / Lain-lain",
+    "kategori": "Pilih satu dari: Makanan & Minuman / Belanja / Transportasi / Kebutuhan Pokok / Tagihan / Kesehatan / Pendidikan / Hiburan / Donasi / Gaji / Usaha / Lain-lain",
     "nominal": 0 (angka nominal dalam integer rupiah),
     "metode": "Pilih satu: QRIS / BCA / Mandiri / BRI / BNI / BSI / GoPay / OVO / DANA / ShopeePay / Tunai / Lainnya",
     "catatan": "Rincian singkat transaksi"
@@ -578,6 +573,7 @@ function generateGeminiJson(requestBody) {
         return parsed;
       }
 
+      // Model tidak ada/tidak mendukung generateContent: jangan menunggu.
       if (status === 404 || status === 400) break;
 
       const temporary = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
@@ -708,6 +704,233 @@ function saveToSheet(item) {
   return record;
 }
 
+function sendTransactionCard(chatId, transaction, title) {
+  const merchant = String(transaction.merchant || "-").toUpperCase();
+  const category = transaction.category || "Lain-lain";
+  const note = transaction.note || "-";
+  const message =
+    (title || "✅ Transaksi tersimpan") + "\n" +
+    formatRupiah(transaction.amount) + " · " + transaction.type + "\n" +
+    merchant + " · " + category + "\n" +
+    formatTelegramDate(transaction.date) + " · " + (transaction.payment || "-") + "\n" +
+    note + "\n\n" +
+    transaction.id;
+
+  sendTelegramMessage(chatId, message, false, {
+    inline_keyboard: [[
+      { text: "✏️ Koreksi", callback_data: "edit:" + transaction.id },
+      { text: "Batalkan transaksi", callback_data: "cancel:" + transaction.id }
+    ]]
+  });
+}
+
+function handleTelegramCallback(query) {
+  const chatId = query && query.message && query.message.chat && query.message.chat.id;
+  const data = String((query && query.data) || "");
+  if (!chatId || !data) return;
+
+  answerTelegramCallback(query.id);
+
+  if (data.indexOf("edit:") === 0) {
+    const transactionId = data.slice(5);
+    if (!getTransactionById(transactionId)) {
+      sendTelegramMessage(chatId, "Transaksi tidak ditemukan atau sudah dibatalkan.");
+      return;
+    }
+    sendTelegramMessage(chatId, "Bagian mana yang ingin dikoreksi?", false, {
+      inline_keyboard: [
+        [
+          { text: "Nominal", callback_data: "editfield:" + transactionId + ":amount" },
+          { text: "Tanggal", callback_data: "editfield:" + transactionId + ":date" }
+        ],
+        [
+          { text: "Merchant", callback_data: "editfield:" + transactionId + ":merchant" },
+          { text: "Kategori", callback_data: "editfield:" + transactionId + ":category" }
+        ],
+        [
+          { text: "Pembayaran", callback_data: "editfield:" + transactionId + ":payment" },
+          { text: "Catatan", callback_data: "editfield:" + transactionId + ":note" }
+        ]
+      ]
+    });
+    return;
+  }
+
+  if (data.indexOf("editfield:") === 0) {
+    const parts = data.split(":");
+    const transactionId = parts[1];
+    const field = parts[2];
+    const labels = {
+      amount: "nominal baru, misalnya 50000",
+      date: "tanggal baru, misalnya 22/10/2026",
+      merchant: "nama merchant yang benar",
+      category: "kategori yang benar",
+      payment: "metode pembayaran yang benar",
+      note: "catatan yang benar"
+    };
+    if (!labels[field] || !getTransactionById(transactionId)) {
+      sendTelegramMessage(chatId, "Transaksi tidak ditemukan atau pilihan koreksi tidak valid.");
+      return;
+    }
+    PropertiesService.getScriptProperties().setProperty("EDIT_FLOW_" + chatId, JSON.stringify({
+      transactionId: transactionId,
+      field: field,
+      expiresAt: Date.now() + (15 * 60 * 1000)
+    }));
+    sendTelegramMessage(chatId, "Kirim " + labels[field] + ".\nKetik /batal untuk membatalkan koreksi.");
+    return;
+  }
+
+  if (data.indexOf("cancel:") === 0) {
+    const transactionId = data.slice(7);
+    if (!getTransactionById(transactionId)) {
+      sendTelegramMessage(chatId, "Transaksi tidak ditemukan atau sudah dibatalkan.");
+      return;
+    }
+    sendTelegramMessage(chatId, "Batalkan transaksi " + transactionId + "?", false, {
+      inline_keyboard: [[
+        { text: "Ya, batalkan", callback_data: "cancelconfirm:" + transactionId },
+        { text: "Kembali", callback_data: "cancelno:" + transactionId }
+      ]]
+    });
+    return;
+  }
+
+  if (data.indexOf("cancelconfirm:") === 0) {
+    const transactionId = data.slice(14);
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Transaksi");
+    if (sheet) cancelTransaction(sheet, transactionId);
+    sendTelegramMessage(chatId, "🗑️ Transaksi " + transactionId + " telah dibatalkan.");
+    return;
+  }
+
+  if (data.indexOf("cancelno:") === 0) {
+    sendTelegramMessage(chatId, "Transaksi tetap disimpan.");
+  }
+}
+
+function handlePendingCorrection(chatId, text) {
+  const props = PropertiesService.getScriptProperties();
+  const key = "EDIT_FLOW_" + chatId;
+  const raw = props.getProperty(key);
+  if (!raw) return false;
+
+  if (text === "/batal") {
+    props.deleteProperty(key);
+    sendTelegramMessage(chatId, "Koreksi dibatalkan. Transaksi tidak diubah.");
+    return true;
+  }
+  if (text.charAt(0) === "/") return false;
+
+  let flow;
+  try { flow = JSON.parse(raw); } catch (err) { flow = null; }
+  if (!flow || Number(flow.expiresAt) < Date.now()) {
+    props.deleteProperty(key);
+    sendTelegramMessage(chatId, "Sesi koreksi sudah berakhir. Tekan Koreksi pada transaksi lagi.");
+    return true;
+  }
+
+  try {
+    const updated = updateTransactionField(flow.transactionId, flow.field, text);
+    props.deleteProperty(key);
+    sendTransactionCard(chatId, updated, "✅ Transaksi diperbarui");
+  } catch (err) {
+    sendTelegramMessage(chatId, "Nilai belum dapat disimpan: " + err.message + "\nSilakan kirim lagi atau ketik /batal.");
+  }
+  return true;
+}
+
+function updateTransactionField(transactionId, field, rawValue) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Transaksi");
+  if (!sheet) throw new Error("sheet Transaksi tidak ditemukan.");
+  const row = findTransactionRow(sheet, transactionId);
+  if (row < 2) throw new Error("transaksi tidak ditemukan.");
+
+  const columnMap = getColumnMap(sheet);
+  const fieldMap = {
+    amount: "nominal",
+    date: "tanggal",
+    merchant: "merchant",
+    category: "kategori",
+    payment: "metode",
+    note: "catatan"
+  };
+  const column = columnMap[fieldMap[field]];
+  if (!column) throw new Error("kolom transaksi tidak tersedia.");
+
+  let value = String(rawValue || "").trim();
+  if (!value) throw new Error("nilai tidak boleh kosong.");
+  if (field === "amount") {
+    value = Number(value.replace(/[^0-9]/g, ""));
+    if (!value || value < 1) throw new Error("nominal harus berupa angka lebih dari nol.");
+  } else if (field === "date") {
+    value = normalizeTransactionDate(value);
+  } else {
+    value = neutralizeSheetText(value).slice(0, field === "note" ? 160 : 80);
+  }
+
+  sheet.getRange(row, column).setValue(value);
+  return getTransactionById(transactionId);
+}
+
+function getTransactionById(transactionId) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Transaksi");
+  if (!sheet) return null;
+  const items = listTransactions(sheet);
+  for (let i = 0; i < items.length; i++) {
+    if (String(items[i].id) === String(transactionId)) return items[i];
+  }
+  return null;
+}
+
+function findTransactionRow(sheet, transactionId) {
+  const columnMap = getColumnMap(sheet);
+  if (!columnMap.id || sheet.getLastRow() < 2) return -1;
+  const ids = sheet.getRange(2, columnMap.id, sheet.getLastRow() - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]).trim() === String(transactionId).trim()) return i + 2;
+  }
+  return -1;
+}
+
+function normalizeTransactionDate(value) {
+  let match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    const local = value.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+    if (local) match = [local[0], local[3], local[2].padStart(2, "0"), local[1].padStart(2, "0")];
+  }
+  if (!match) throw new Error("gunakan format DD/MM/YYYY atau YYYY-MM-DD.");
+  const normalized = match[1] + "-" + match[2] + "-" + match[3];
+  const date = new Date(normalized + "T12:00:00+07:00");
+  if (isNaN(date.getTime()) || Utilities.formatDate(date, "Asia/Jakarta", "yyyy-MM-dd") !== normalized) {
+    throw new Error("tanggal tidak valid.");
+  }
+  return normalized;
+}
+
+function neutralizeSheetText(value) {
+  return /^[=+\-@]/.test(value) ? "'" + value : value;
+}
+
+function formatRupiah(amount) {
+  return "Rp" + Math.round(Number(amount) || 0).toLocaleString("id-ID");
+}
+
+function formatTelegramDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? match[3] + "/" + match[2] + "/" + match[1] : String(value || "-");
+}
+
+function answerTelegramCallback(callbackQueryId) {
+  if (!callbackQueryId) return;
+  UrlFetchApp.fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify({ callback_query_id: callbackQueryId }),
+    muteHttpExceptions: true
+  });
+}
+
 /**
  * Menghitung dan mengirim laporan ringkasan bulanan di Telegram
  */
@@ -808,12 +1031,13 @@ function downloadTelegramFile(fileId) {
   return UrlFetchApp.fetch(downloadUrl, { muteHttpExceptions: true }).getBlob();
 }
 
-function sendTelegramMessage(chatId, text, isMarkdown = false) {
+function sendTelegramMessage(chatId, text, isMarkdown = false, replyMarkup) {
   const payload = {
     chat_id: chatId,
     text: text
   };
   if (isMarkdown) payload.parse_mode = "Markdown";
+  if (replyMarkup) payload.reply_markup = replyMarkup;
 
   UrlFetchApp.fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "post",
