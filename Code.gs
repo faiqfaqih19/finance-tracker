@@ -12,14 +12,14 @@
 const TELEGRAM_BOT_TOKEN = PropertiesService.getScriptProperties().getProperty('TELEGRAM_BOT_TOKEN') || "YOUR_TELEGRAM_BOT_TOKEN";
 const GEMINI_API_KEY     = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY') || "YOUR_GEMINI_API_KEY";
 
-// Model Gemini (gemini-1.5-flash cepat, akurat, dan memiliki kuota gratis yang luas)
-const GEMINI_MODEL       = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || "gemini-1.5-flash";
+// Model Gemini (gemini-3.8-flash adalah model aktif terbaru yang cepat & akurat)
+const GEMINI_MODEL       = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || "gemini-3.8-flash";
 
 // Token sinkronisasi standar untuk Web App pribadi (cocokkan dengan app.js)
 const DEFAULT_SYNC_TOKEN = "finance-tracker-pribadi-token-2026-faiq";
 
-// URL Web App Finance Tracker (Ganti dengan URL hosting web Anda, misal Vercel / GitHub Pages)
-const DEFAULT_WEB_APP_URL = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL') || "https://faiqfaqih19.github.io/finance-tracker/";
+// URL Web App Finance Tracker di Vercel
+const DEFAULT_WEB_APP_URL = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL') || "https://finance-tracker-ruby-beta.vercel.app/";
 
 /**
  * 1. JALANKAN INI PERTAMA KALI UNTUK MENYIAPKAN STRUKTUR SPREADSHEET
@@ -130,13 +130,15 @@ function doPost(e) {
     // B. JIKA INI PESAN DARI TELEGRAM WEBHOOK
     if (payload.message) {
       handleTelegramMessage(payload.message);
-      return ContentService.createTextOutput("OK");
+      // Gunakan HtmlService agar Telegram menerima HTTP 200 tanpa redirect 302
+      return HtmlService.createHtmlOutput("OK");
     }
 
     return jsonResponse({ ok: true, message: "No actionable payload" });
   } catch (error) {
     Logger.log("doPost Error: " + error.toString());
-    return jsonResponse({ ok: false, error: error.toString() });
+    // Jika dari Telegram, tetap kembalikan HTML agar webhook tidak stuck
+    return HtmlService.createHtmlOutput("OK");
   }
 }
 
@@ -407,48 +409,53 @@ function handleTelegramMessage(message) {
   // 6. PROSES GAMBAR ATAU TEKS TRANSAKSI
   sendTelegramMessage(chatId, "⏳ Sedang membaca & menganalisis bukti transaksi...");
 
-  let result = null;
+  try {
+    let result = null;
 
-  // JIKA PENGGUNA MENGIRIM FOTO
-  if (message.photo && message.photo.length > 0) {
-    const highestResPhoto = message.photo[message.photo.length - 1];
-    const imageBlob = downloadTelegramFile(highestResPhoto.file_id);
-    result = analyzeWithGeminiVision(imageBlob, message.caption || "");
+    // JIKA PENGGUNA MENGIRIM FOTO
+    if (message.photo && message.photo.length > 0) {
+      const highestResPhoto = message.photo[message.photo.length - 1];
+      const imageBlob = downloadTelegramFile(highestResPhoto.file_id);
+      result = analyzeWithGeminiVision(imageBlob, message.caption || "");
+    }
+    // JIKA PENGGUNA MENGIRIM GAMBAR SEBAGAI DOKUMEN
+    else if (message.document && message.document.mime_type && message.document.mime_type.startsWith("image/")) {
+      const imageBlob = downloadTelegramFile(message.document.file_id);
+      result = analyzeWithGeminiVision(imageBlob, message.caption || "");
+    }
+    // JIKA PENGGUNA MENGETIK TEKS
+    else if (text) {
+      result = analyzeWithGeminiText(text);
+    } else {
+      sendTelegramMessage(chatId, "⚠️ Mohon kirimkan foto struk/nota, bukti transfer, atau ketik rincian belanja Anda.");
+      return;
+    }
+
+    if (!result || !result.nominal) {
+      sendTelegramMessage(chatId, "❌ Maaf, AI belum berhasil mendeteksi nominal transaksi dari bukti tersebut. Silakan kirim foto struk yang lebih terang dan tegak lurus.");
+      return;
+    }
+
+    // Simpan transaksi
+    const saved = saveToSheet(result);
+    const formattedNominal = "Rp " + Number(saved.amount).toLocaleString("id-ID");
+
+    const replyText = 
+      `✅ *Transaksi Berhasil Dicatat!*\n\n` +
+      `📅 *Tanggal:* ${saved.date}\n` +
+      `🏷 *Jenis:* ${saved.type}\n` +
+      `🏪 *Merchant/Pihak:* ${saved.merchant || "-"}\n` +
+      `📂 *Kategori:* ${saved.category || "-"}\n` +
+      `💳 *Metode:* ${saved.payment || "-"}\n` +
+      `💰 *Nominal:* *${formattedNominal}*\n` +
+      `📝 *Catatan:* ${saved.note || "-"}\n\n` +
+      `_Data telah otomatis tersinkron dengan Web App & Google Sheets._`;
+
+    sendTelegramMessage(chatId, replyText, true);
+  } catch (err) {
+    Logger.log("Error processing transaction: " + err.toString());
+    sendTelegramMessage(chatId, "⚠️ Terjadi kendala saat membaca bukti: " + err.message);
   }
-  // JIKA PENGGUNA MENGIRIM GAMBAR SEBAGAI DOKUMEN
-  else if (message.document && message.document.mime_type && message.document.mime_type.startsWith("image/")) {
-    const imageBlob = downloadTelegramFile(message.document.file_id);
-    result = analyzeWithGeminiVision(imageBlob, message.caption || "");
-  }
-  // JIKA PENGGUNA MENGETIK TEKS
-  else if (text) {
-    result = analyzeWithGeminiText(text);
-  } else {
-    sendTelegramMessage(chatId, "⚠️ Mohon kirimkan foto struk/nota, bukti transfer, atau ketik rincian belanja Anda.");
-    return;
-  }
-
-  if (!result || !result.nominal) {
-    sendTelegramMessage(chatId, "❌ Maaf, AI belum berhasil mendeteksi nominal transaksi dari bukti tersebut. Silakan kirim foto struk yang lebih terang dan tegak lurus.");
-    return;
-  }
-
-  // Simpan transaksi
-  const saved = saveToSheet(result);
-  const formattedNominal = "Rp " + Number(saved.amount).toLocaleString("id-ID");
-
-  const replyText = 
-    `✅ *Transaksi Berhasil Dicatat!*\n\n` +
-    `📅 *Tanggal:* ${saved.date}\n` +
-    `🏷 *Jenis:* ${saved.type}\n` +
-    `🏪 *Merchant/Pihak:* ${saved.merchant || "-"}\n` +
-    `📂 *Kategori:* ${saved.category || "-"}\n` +
-    `💳 *Metode:* ${saved.payment || "-"}\n` +
-    `💰 *Nominal:* *${formattedNominal}*\n` +
-    `📝 *Catatan:* ${saved.note || "-"}\n\n` +
-    `_Data telah otomatis tersinkron dengan Web App & Google Sheets._`;
-
-  sendTelegramMessage(chatId, replyText, true);
 }
 
 /**
@@ -680,10 +687,14 @@ function isValidToken(clientToken) {
 
 function downloadTelegramFile(fileId) {
   const getFileUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`;
-  const response = UrlFetchApp.fetch(getFileUrl);
-  const filePath = JSON.parse(response.getContentText()).result.file_path;
+  const response = UrlFetchApp.fetch(getFileUrl, { muteHttpExceptions: true });
+  const json = JSON.parse(response.getContentText());
+  if (!json.ok || !json.result || !json.result.file_path) {
+    throw new Error("Gagal mengunduh file dari Telegram: " + (json.description || "file tidak ditemukan"));
+  }
+  const filePath = json.result.file_path;
   const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
-  return UrlFetchApp.fetch(downloadUrl).getBlob();
+  return UrlFetchApp.fetch(downloadUrl, { muteHttpExceptions: true }).getBlob();
 }
 
 function sendTelegramMessage(chatId, text, isMarkdown = false) {
