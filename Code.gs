@@ -102,6 +102,10 @@ function setTelegramWebhook(webAppUrl) {
 function doGet(e) {
   // Dukungan langsung untuk action=list via GET agar bebas kendala CORS di browser
   const action = e && e.parameter && (e.parameter.action || (e.parameter.api === 'sync' && e.parameter.action));
+  if (action === 'config_status') {
+    return ContentService.createTextOutput(JSON.stringify({ ok: true, ownerConfigured: Boolean(getAuthorizedChatId()) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
   if (action === 'list') {
     return handleSyncApi({ action: 'list', token: e.parameter.token || '' }, e);
   }
