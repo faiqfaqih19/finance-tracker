@@ -11,11 +11,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="design-bridge.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
 </head>
 <body>
-<nav id="nav" aria-label="Menu utama"></nav>
-<main id="view" aria-live="polite"></main>
+<aside class="app-sidebar"><nav id="nav" aria-label="Menu utama"></nav></aside>
+<main><div class="mobilebrand">financetracker.</div><div id="view" aria-live="polite"></div></main>
 <dialog id="dlg"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="app.js"></script>
