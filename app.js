@@ -569,8 +569,8 @@ function getChartColors() {
     gridColor: isDark ? 'rgba(228,224,247,0.15)' : 'rgba(67,53,143,0.1)',
     tooltipBg: isDark ? '#292449' : '#fff',
     tooltipText: isDark ? '#f1efff' : '#1d1b2c',
-    primary: '#6249d8', secondary: '#3ab7a5', accent: '#e4e0f7',
-    income: '#3ab7a5', expense: '#ec705e', net: '#43358f'
+    primary: '#10b981', secondary: '#1d4ed8', accent: '#fbbf24',
+    income: '#10b981', expense: '#fbbf24', net: '#1d4ed8'
   };
 }
 
@@ -878,20 +878,20 @@ function renderNav() {
   const isDark = document.documentElement.classList.contains('dark');
 
   nav.innerHTML = `
-    <span class="brand">finance<span style="color:var(--g)">tracker.</span></span>
+    <span class="brand"><span class="brandmark">▥</span> finance<span style="color:var(--g)">tracker.</span></span>
 
     <button class="t ${currentTab === 'ringkasan' ? 'on' : ''}" data-tab="ringkasan">
-      <span>📊</span>
+      <span class="nav-icon">▥</span>
       Ringkasan
     </button>
 
     <button class="t ${currentTab === 'transaksi' ? 'on' : ''}" data-tab="transaksi">
-      <span>💳</span>
+      <span class="nav-icon">▤</span>
       Transaksi
     </button>
 
     <button class="t ${currentTab === 'tagihan' ? 'on' : ''}" data-tab="tagihan">
-      <span>📅</span>
+      <span class="nav-icon">▦</span>
       Tagihan
     </button>
 
@@ -901,12 +901,12 @@ function renderNav() {
     </button>
 
     <button class="t ${currentTab === 'nota' ? 'on' : ''}" data-tab="nota">
-      <span>🧾</span>
+      <span class="nav-icon">▧</span>
       Pindai Nota
     </button>
 
     <button class="t ${currentTab === 'data' ? 'on' : ''}" data-tab="data">
-      <span>⚙️</span>
+      <span class="nav-icon">⚙</span>
       Kelola Data
     </button>
 
