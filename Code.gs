@@ -350,6 +350,20 @@ function handleTelegramMessage(message, updateId) {
   const chatId = message.chat.id;
   const text = (message.text || '').trim();
 
+  // GERBANG OTORISASI: hanya pemilik bot yang boleh memakai bot ini.
+  const ownerId = getAuthorizedChatId();
+  if (!ownerId) {
+    // Penetapan pemilik harus dilakukan dari Script Properties, bukan oleh pengirim Telegram pertama.
+    Logger.log("Bot belum memiliki AUTHORIZED_CHAT_ID; pesan ditolak dari chat: " + chatId);
+    sendTelegramMessage(chatId, "Bot belum diaktifkan. Tetapkan AUTHORIZED_CHAT_ID di Script Properties terlebih dahulu.");
+    return;
+  }
+  if (message.chat.type !== 'private' || !isAuthorizedChat(chatId)) {
+    Logger.log("Pesan ditolak dari chat tidak terotorisasi: " + chatId);
+    sendTelegramMessage(chatId, "⛔ Bot ini bersifat pribadi dan hanya dapat dipakai oleh pemiliknya.");
+    return;
+  }
+
   if (text && handlePendingCorrection(chatId, text)) return;
 
   // 1. COMMAND: /start
@@ -374,7 +388,6 @@ function handleTelegramMessage(message, updateId) {
   if (text.startsWith('/hubungkan') || text.startsWith('/connect')) {
     const token = getOrCreateSyncToken();
     const props = PropertiesService.getScriptProperties();
-    props.setProperty('AUTHORIZED_CHAT_ID', String(chatId));
 
     const webAppBase = props.getProperty('WEB_APP_URL') || DEFAULT_WEB_APP_URL;
     const connectUrl = webAppBase.replace(/\/$/, '') + '/#connect=' + encodeURIComponent(token);
@@ -394,12 +407,12 @@ function handleTelegramMessage(message, updateId) {
   // 3. COMMAND: /seturl <url>
   if (text.startsWith('/seturl')) {
     const parts = text.split(/\s+/);
-    if (parts.length > 1 && parts[1].startsWith('http')) {
+    if (parts.length > 1 && /^https:\/\/[^\s]+$/i.test(parts[1])) {
       const newUrl = parts[1].trim();
       PropertiesService.getScriptProperties().setProperty('WEB_APP_URL', newUrl);
       sendTelegramMessage(chatId, `✅ URL Web App berhasil disetel ke:\n${newUrl}`);
     } else {
-      sendTelegramMessage(chatId, `⚠️ Format salah. Contoh penggunaan:\n\`/seturl https://faiqfaqih19.github.io/finance-tracker/\``, true);
+      sendTelegramMessage(chatId, `⚠️ Format salah (wajib https). Contoh penggunaan:\n\`/seturl https://faiqfaqih19.github.io/finance-tracker/\``, true);
     }
     return;
   }
@@ -795,6 +808,10 @@ function handleTelegramCallback(query) {
   if (!chatId || !data) return;
 
   answerTelegramCallback(query.id);
+  if (!isAuthorizedChat(chatId)) {
+    Logger.log("Callback ditolak dari chat tidak terotorisasi: " + chatId);
+    return;
+  }
 
   if (data.indexOf("edit:") === 0) {
     const transactionId = data.slice(5);
@@ -1075,6 +1092,39 @@ function getOrCreateSyncToken() {
     });
   }
   return token;
+}
+
+/**
+ * Chat ID pemilik bot (disimpan di Script Properties, 'AUTHORIZED_CHAT_ID').
+ * Terisi otomatis oleh /hubungkan pertama di chat pribadi, atau manual lewat
+ * setAuthorizedChatId().
+ */
+function getAuthorizedChatId() {
+  const v = PropertiesService.getScriptProperties().getProperty('AUTHORIZED_CHAT_ID');
+  return v ? String(v).trim() : '';
+}
+
+function isAuthorizedChat(chatId) {
+  const owner = getAuthorizedChatId();
+  return Boolean(owner) && String(chatId) === owner;
+}
+
+/** Jalankan manual dari editor Apps Script untuk menetapkan pemilik bot. */
+function setAuthorizedChatId(chatId) {
+  if (!chatId) throw new Error('Isi chatId, misalnya setAuthorizedChatId(123456789).');
+  PropertiesService.getScriptProperties().setProperty('AUTHORIZED_CHAT_ID', String(chatId));
+  Logger.log('AUTHORIZED_CHAT_ID disetel.');
+}
+
+/**
+ * Jalankan manual jika perlu memindahkan bot ke akun Telegram lain. Sekaligus
+ * merotasi token sinkronisasi agar token lama tidak berlaku.
+ */
+function resetAuthorizedChat() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('AUTHORIZED_CHAT_ID');
+  props.deleteProperty('SYNC_TOKEN');
+  Logger.log('Pemilik dihapus & token dirotasi. Kirim /hubungkan dari akun yang benar.');
 }
 
 function isValidToken(clientToken) {
