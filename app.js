@@ -565,16 +565,12 @@ function formatDateIndo(dStr) {
 function getChartColors() {
   const isDark = document.documentElement.classList.contains('dark');
   return {
-    textColor: isDark ? '#e8f5e9' : '#0d2a17',
-    gridColor: isDark ? 'rgba(224,247,241,0.15)' : 'rgba(0,77,0,0.1)',
-    tooltipBg: isDark ? '#1a3d2e' : '#fff',
-    tooltipText: isDark ? '#e8f5e9' : '#0d2a17',
-    primary: '#007a33',
-    secondary: '#66b3a1',
-    accent: '#b2e0d4',
-    income: '#007a33',
-    expense: '#b3422f',
-    net: '#004d00'
+    textColor: isDark ? '#f1efff' : '#1d1b2c',
+    gridColor: isDark ? 'rgba(228,224,247,0.15)' : 'rgba(67,53,143,0.1)',
+    tooltipBg: isDark ? '#292449' : '#fff',
+    tooltipText: isDark ? '#f1efff' : '#1d1b2c',
+    primary: '#6249d8', secondary: '#3ab7a5', accent: '#e4e0f7',
+    income: '#3ab7a5', expense: '#ec705e', net: '#43358f'
   };
 }
 
