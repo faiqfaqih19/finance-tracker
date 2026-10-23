@@ -139,20 +139,27 @@ function parseText(raw,now=today()){const lines=String(raw||'').split(/\r?\n/).m
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
-const CAT_ICONS = {
-  'Makanan & Minuman': '🍔',
-  'Belanja': '🛍️',
-  'Transportasi': '🚗',
-  'Kebutuhan Pokok': '🛒',
-  'Tagihan': '⚡',
-  'Kesehatan': '💊',
-  'Pendidikan': '📚',
-  'Hiburan': '🎬',
-  'Gaji': '💰',
-  'Usaha': '💼',
-  'Transfer': '🔄',
-  'Lain-lain': '🏷️'
+// SVG paths from the user-supplied index.html design.
+const UI_PATHS = {
+  grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4M17 3v4M3 11h18M8 15h3"/>',
+  scan:'<path d="M8 3H4a1 1 0 0 0-1 1v4m13-5h4a1 1 0 0 1 1 1v4M3 16v4a1 1 0 0 0 1 1h4m8 0h4a1 1 0 0 0 1-1v-4M7 8h10M7 12h10M7 16h6"/>',
+  database:'<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/>',
+  up:'<path d="M7 17 17 7M7 7h10v10"/>',down:'<path d="m7 7 10 10M7 17h10V7"/>',
+  refresh:'<path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/>',
+  wallet:'<path d="M20 8V5H5a3 3 0 0 0 0 6h16v9H5a3 3 0 0 1-3-3V8M16 13h5v4h-5z"/>',
+  search:'<circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/>',
+  bag:'<rect x="4" y="7" width="16" height="14" rx="3"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/>',
+  telegram:'<path d="m3 10 18-7-5 18-5-7-8-4zM11 14 21 3"/>',
+  upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 15v5h16v-5"/>',
+  download:'<path d="M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4"/>',
+  spark:'<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/>',
+  check:'<path d="m5 12 4 4L19 6"/>',
+  trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>'
 };
+const uiIcon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${UI_PATHS[name] || UI_PATHS.bag}</svg>`;
+const CAT_ICONS = {'Makanan & Minuman':'bag','Belanja':'bag','Transportasi':'up','Kebutuhan Pokok':'bag','Tagihan':'calendar','Kesehatan':'check','Pendidikan':'list','Hiburan':'spark','Gaji':'down','Usaha':'wallet','Transfer':'refresh','Lain-lain':'grid'};
 
 const PAY_METHODS = ['QRIS', 'BCA', 'BRI', 'Mandiri', 'BNI', 'BSI', 'GoPay', 'OVO', 'DANA', 'ShopeePay', 'Tunai', 'Lainnya'];
 
@@ -881,17 +888,17 @@ function renderNav() {
     <span class="brand"><span class="brandmark">▥</span> finance<span style="color:var(--g)">tracker.</span></span>
 
     <button class="t ${currentTab === 'ringkasan' ? 'on' : ''}" data-tab="ringkasan">
-      <span class="nav-icon">▥</span>
+      <span class="nav-icon">${uiIcon('grid')}</span>
       Ringkasan
     </button>
 
     <button class="t ${currentTab === 'transaksi' ? 'on' : ''}" data-tab="transaksi">
-      <span class="nav-icon">▤</span>
+      <span class="nav-icon">${uiIcon('list')}</span>
       Transaksi
     </button>
 
     <button class="t ${currentTab === 'tagihan' ? 'on' : ''}" data-tab="tagihan">
-      <span class="nav-icon">▦</span>
+      <span class="nav-icon">${uiIcon('calendar')}</span>
       Tagihan
     </button>
 
@@ -901,12 +908,12 @@ function renderNav() {
     </button>
 
     <button class="t ${currentTab === 'nota' ? 'on' : ''}" data-tab="nota">
-      <span class="nav-icon">▧</span>
+      <span class="nav-icon">${uiIcon('scan')}</span>
       Pindai Nota
     </button>
 
     <button class="t ${currentTab === 'data' ? 'on' : ''}" data-tab="data">
-      <span class="nav-icon">⚙</span>
+      <span class="nav-icon">${uiIcon('database')}</span>
       Kelola Data
     </button>
 
@@ -992,7 +999,7 @@ function renderDashboard() {
   } else {
     txList = `
       <div class="empty">
-        <div style="font-size: 32px;">🌱</div>
+        <div class="emptyicon">${uiIcon('wallet')}</div>
         <b>Mulai catat transaksi pertama Anda</b>
         <small>Klik tombol <strong>+ Catat</strong> di bawah atau pindai nota.</small>
       </div>
@@ -1051,10 +1058,10 @@ function renderDashboard() {
     <div class="hd">
       <div>
         <h1>Ringkasan Keuangan</h1>
-        <small class="muted">${syncConnected() ? (syncState === 'online' ? '🟢 Tersinkron dengan spreadsheet bot' : syncState === 'error' ? '⚠️ Koneksi bot perlu diperiksa' : '⏳ Mengambil data dari bot…') : 'Catat uang, tenang hati · Ruang pribadi offline'}</small>
+        <small class="muted">${syncConnected() ? (syncState === 'online' ? 'Tersinkron dengan spreadsheet bot' : syncState === 'error' ? 'Koneksi bot perlu diperiksa' : 'Mengambil data dari bot…') : 'Catat uang, tenang hati · Ruang pribadi offline'}</small>
       </div>
       <div style="display: flex; gap: 8px; align-items: center;">
-        <button id="btnHeaderSync" class="btn ghost" style="padding: 6px 12px; font-size: 13px;" title="Sinkronkan data sekarang">🔄 Sync</button>
+        <button id="btnHeaderSync" class="btn ghost" style="padding: 6px 12px; font-size: 13px;" title="Sinkronkan data sekarang">${uiIcon('refresh')} Sync</button>
         <select id="periodFilter" style="width: auto; padding: 6px 12px; margin: 0; font-size: 13px; font-weight: 600;">
           <option value="month" ${currentPeriod === 'month' ? 'selected' : ''}>Bulan ini</option>
           <option value="today" ${currentPeriod === 'today' ? 'selected' : ''}>Hari ini</option>
@@ -1085,28 +1092,28 @@ function renderDashboard() {
     <!-- Quick Stats Grid -->
     <div class="stats-grid">
       <div class="card stat-card">
-        <div class="stat-icon">💰</div>
+        <div class="stat-icon">${uiIcon('wallet')}</div>
         <div>
           <small>Tingkat Tabungan</small>
           <b style="color:${savingsRate >= 20 ? 'var(--g)' : savingsRate >= 0 ? 'var(--mut)' : 'var(--red)'}">${savingsRate >= 0 ? '+' : ''}${savingsRate}%</b>
         </div>
       </div>
       <div class="card stat-card">
-        <div class="stat-icon">📅</div>
+        <div class="stat-icon">${uiIcon('calendar')}</div>
         <div>
           <small>Rata-rata/Hari</small>
           <b>${money(dailyAvgExpense)}</b>
         </div>
       </div>
       <div class="card stat-card">
-        <div class="stat-icon">🏆</div>
+        <div class="stat-icon">${uiIcon('up')}</div>
         <div>
           <small>Hari Belanja Terbesar</small>
           <b>${topExpenseDay.day || '—'}</b>
         </div>
       </div>
       <div class="card stat-card">
-        <div class="stat-icon">📅</div>
+        <div class="stat-icon">${uiIcon('calendar')}</div>
         <div>
           <small>Tagihan Mendatang</small>
           <b>${upcomingBills.length}</b>
@@ -1156,7 +1163,7 @@ function renderDashboard() {
       <!-- Insights -->
       <div class="card">
         <div class="row-h">
-          <h2>💡 Insight & Tips</h2>
+          <h2>${uiIcon('spark')} Insight & Tips</h2>
         </div>
         ${insightsHtml || '<p class="muted" style="text-align:center;padding:16px 0">Catat lebih banyak transaksi untuk mendapatkan insight</p>'}
       </div>
@@ -1164,7 +1171,7 @@ function renderDashboard() {
       <!-- Upcoming Bills -->
       <div class="card">
         <div class="row-h">
-          <h2>📅 Tagihan Mendatang</h2>
+          <h2>${uiIcon('calendar')} Tagihan Mendatang</h2>
           <a class="lnk" href="#tagihan" id="btnSeeAllBills" style="font-size:13px">Lihat Semua ↗</a>
         </div>
         ${upcomingBillsHtml}
@@ -1174,7 +1181,7 @@ function renderDashboard() {
     <!-- Large Transactions -->
     <div class="card">
       <div class="row-h">
-        <h2>💸 Pengeluaran Terbesar</h2>
+        <h2>${uiIcon('up')} Pengeluaran Terbesar</h2>
         <a class="lnk" href="#transaksi" id="btnSeeAllLargeTx" style="font-size:13px">Lihat Semua ↗</a>
       </div>
       ${largeTxHtml}
@@ -1228,13 +1235,13 @@ function generateInsights(agg, transactions, code) {
   if (agg.income > 0) {
     const savingsRate = Math.round((agg.net / agg.income) * 100);
     if (savingsRate >= 20) {
-      insights.push({ icon: '🎉', title: 'Tabungan Sehat!', desc: `Kamu menabung ${savingsRate}% dari pemasukan. Pertahankan!` });
+      insights.push({ icon: uiIcon('check'), title: 'Tabungan Sehat!', desc: `Kamu menabung ${savingsRate}% dari pemasukan. Pertahankan!` });
     } else if (savingsRate >= 10) {
-      insights.push({ icon: '👍', title: 'Tabungan Lumayan', desc: `Tingkat tabungan ${savingsRate}% - coba targetkan 20%+.` });
+      insights.push({ icon: uiIcon('check'), title: 'Tabungan Lumayan', desc: `Tingkat tabungan ${savingsRate}% - coba targetkan 20%+.` });
     } else if (savingsRate >= 0) {
-      insights.push({ icon: '⚠️', title: 'Tabungan Tipis', desc: `Hanya ${savingsRate}% tersisa. Pertimbangkan kurangi pengeluaran non-esensial.` });
+      insights.push({ icon: uiIcon('up'), title: 'Tabungan Tipis', desc: `Hanya ${savingsRate}% tersisa. Pertimbangkan kurangi pengeluaran non-esensial.` });
     } else {
-      insights.push({ icon: '🚨', title: 'Defisit Bulanan', desc: `Pengeluaran melebihi pemasukan ${money(Math.abs(agg.net))}. Perlu evaluasi mendesak.` });
+      insights.push({ icon: uiIcon('up'), title: 'Defisit Bulanan', desc: `Pengeluaran melebihi pemasukan ${money(Math.abs(agg.net))}. Perlu evaluasi mendesak.` });
     }
   }
 
@@ -1243,7 +1250,7 @@ function generateInsights(agg, transactions, code) {
     const [topCat, topAmt] = agg.categories[0];
     const pct = Math.round((topAmt / agg.expense) * 100);
     if (pct > 40) {
-      insights.push({ icon: '📊', title: `Konsentrasi di ${topCat}`, desc: `${pct}% pengeluaran di kategori ini. Apakah bisa dioptimalkan?` });
+      insights.push({ icon: uiIcon('grid'), title: `Konsentrasi di ${topCat}`, desc: `${pct}% pengeluaran di kategori ini. Apakah bisa dioptimalkan?` });
     }
   }
 
@@ -1252,7 +1259,7 @@ function generateInsights(agg, transactions, code) {
   if (txCount > 0) {
     const avgPerDay = txCount / getDaysInPeriod(code);
     if (avgPerDay > 3) {
-      insights.push({ icon: '🧾', title: 'Sering Transaksi', desc: `Rata-rata ${avgPerDay.toFixed(1)} transaksi/hari. Pertimbangkan catat sekaligus di akhir hari.` });
+      insights.push({ icon: uiIcon('list'), title: 'Sering Transaksi', desc: `Rata-rata ${avgPerDay.toFixed(1)} transaksi/hari. Pertimbangkan catat sekaligus di akhir hari.` });
     }
   }
 
@@ -1266,7 +1273,7 @@ function generateInsights(agg, transactions, code) {
     if (agg.income > 0) {
       const billRatio = Math.round((totalMonthlyBills / agg.income) * 100);
       if (billRatio > 50) {
-        insights.push({ icon: '📋', title: 'Beban Tagihan Tinggi', desc: `Tagihan berkala ~${billRatio}% pemasukan. Review langganan yang tidak perlu.` });
+        insights.push({ icon: uiIcon('calendar'), title: 'Beban Tagihan Tinggi', desc: `Tagihan berkala ~${billRatio}% pemasukan. Review langganan yang tidak perlu.` });
       }
     }
   }
@@ -1308,7 +1315,7 @@ function renderTransactions() {
     content = `
       <div class="card">
         <div class="empty">
-          <div style="font-size: 32px;">🔍</div>
+          <div class="emptyicon">${uiIcon('search')}</div>
           <b>Tidak ada transaksi ditemukan</b>
           <small>Coba ganti kata kunci pencarian atau kategori filter.</small>
         </div>
@@ -1354,7 +1361,7 @@ function renderTransactions() {
 
 function renderTxItem(t) {
   const isIncome = t.type === 'Pemasukan';
-  const icon = CAT_ICONS[t.category] || '🏷️';
+  const icon = uiIcon(CAT_ICONS[t.category] || 'bag');
   return `
     <button class="tx" data-txid="${esc(t.id)}">
       <span class="ico">${icon}</span>
@@ -1387,7 +1394,7 @@ function renderReceiptScanner() {
     <div class="card">
       <h2>Upload Foto Bukti Transaksi</h2>
       <label class="drop" for="receiptFile">
-        <span class="big">📸</span>
+        <span class="big">${uiIcon('upload')}</span>
         <b>Pilih Foto Struk / Screenshot Bukti Transfer</b>
         <small>Pilih gambar nota dari galeri HP atau kamera MacBook Anda.</small>
       </label>
@@ -1395,7 +1402,7 @@ function renderReceiptScanner() {
     </div>
 
     <div class="note">
-      💡 <b>Tips Integrasi Otomatis:</b> Jika Anda ingin foto nota langsung dibaca otomatis lewat kecerdasan buatan Gemini AI dari iPhone tanpa membuka web, gunakan <b>Bot Telegram Pribadi</b> yang telah disiapkan!
+      ${uiIcon('spark')} <b>Tips Integrasi Otomatis:</b> Jika Anda ingin foto nota langsung dibaca otomatis lewat kecerdasan buatan Gemini AI dari iPhone tanpa membuka web, gunakan <b>Bot Telegram Pribadi</b> yang telah disiapkan!
     </div>
   `;
 }
@@ -1404,9 +1411,9 @@ function renderReceiptScanner() {
 function renderDataTools() {
   const syncCard = syncConnected() ? `
     <div class="card" style="border: 1px solid var(--g);">
-      <h2>✅ Terhubung dengan Bot Telegram</h2>
+      <h2>${uiIcon('telegram')} Terhubung dengan Bot Telegram</h2>
       <p class="muted" style="margin-bottom: 14px;">Transaksi dari bot dan aplikasi memakai spreadsheet yang sama.${lastSyncAt ? ' Terakhir diperbarui ' + new Date(lastSyncAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + '.' : ''}</p>
-      <button class="btn pri" id="btnSyncNow">🔄 Sinkronkan Sekarang</button>
+      <button class="btn pri" id="btnSyncNow">${uiIcon('refresh')} Sinkronkan Sekarang</button>
       <button class="btn ghost" id="btnDisconnectSync">Putuskan perangkat ini</button>
     </div>` : `
     <div class="card" style="border: 1px solid var(--g);">
@@ -1437,20 +1444,20 @@ function renderDataTools() {
     <div class="card">
       <h2>Cadangkan Data (CSV)</h2>
       <p class="muted" style="margin-bottom: 14px;">Ekspor seluruh transaksi ke file spreadsheet CSV untuk dibuka di Google Sheets atau Microsoft Excel.</p>
-      <button class="btn pri" id="btnExportCsv">📥 Unduh File CSV</button>
+      <button class="btn pri" id="btnExportCsv">${uiIcon('download')} Unduh File CSV</button>
     </div>
 
     <div class="card">
       <h2>Impor Data Spreadsheet</h2>
       <p class="muted" style="margin-bottom: 14px;">Masukkan catatan dari file CSV yang sudah ada ke aplikasi ini.</p>
       <input type="file" id="importCsvInput" accept=".csv,text/csv" style="display:none">
-      <button class="btn ghost" id="btnTriggerImport">📤 Pilih File CSV untuk Diimpor</button>
+      <button class="btn ghost" id="btnTriggerImport">${uiIcon('upload')} Pilih File CSV untuk Diimpor</button>
     </div>
 
     <div class="card" style="border: 1px solid var(--red);">
       <h2 style="color: var(--red);">Hapus Semua Data</h2>
       <p class="muted" style="margin-bottom: 14px;">${syncConnected() ? 'Fitur ini dinonaktifkan saat tersambung agar catatan bot tidak terhapus tanpa sengaja.' : 'Data tersimpan secara offline di browser Anda. Tindakan ini akan mengosongkan seluruh database transaksi.'}</p>
-      <button class="btn danger" id="btnResetData" ${syncConnected() ? 'disabled' : ''}>🗑️ Kosongkan Database</button>
+      <button class="btn danger" id="btnResetData" ${syncConnected() ? 'disabled' : ''}>${uiIcon('trash')} Kosongkan Database</button>
     </div>
   `;
 }
@@ -1463,7 +1470,7 @@ function renderRecurringBills() {
     content = `
       <div class="card">
         <div class="empty">
-          <div style="font-size: 32px;">📅</div>
+          <div class="emptyicon">${uiIcon('calendar')}</div>
           <b>Belum ada tagihan berkala</b>
           <small>Tambahkan tagihan yang berulang seperti listrik, internet, cicilan, atau langganan.</small>
         </div>
@@ -1482,7 +1489,7 @@ function renderRecurringBills() {
       items += `
         <button class="tx" data-billid="${esc(bill.id)}" style="justify-content: space-between;">
           <div style="display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;">
-            <span class="ico" style="background: var(--p);">📅</span>
+            <span class="ico" style="background: var(--p);">${uiIcon('calendar')}</span>
             <div class="tm" style="min-width: 0;">
               <b>${esc(bill.name)}</b>
               <small>${esc(bill.merchant)} · ${formatFrequency(bill.frequency, bill.customDays)} · ${money(bill.amount)}</small>
@@ -1528,7 +1535,7 @@ function attachViewListeners() {
       btnHeaderSync.textContent = '⏳';
       btnHeaderSync.disabled = true;
       const ok = await refreshFromBot();
-      btnHeaderSync.textContent = '🔄 Sync';
+      btnHeaderSync.innerHTML = `${uiIcon('refresh')} Sync`;
       btnHeaderSync.disabled = false;
       if (ok) {
         showToast('✅ Berhasil menyinkronkan data dengan Google Sheets!');

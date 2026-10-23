@@ -1,0 +1,7 @@
+.nav-icon{display:inline-flex;align-items:center;justify-content:center}.nav-icon .icon{width:21px;height:21px}
+.stat-icon{color:var(--emerald);display:inline-flex;align-items:center}.stat-icon .icon{width:20px;height:20px}
+.ico{color:var(--emerald)}.ico .icon{width:18px;height:18px}
+.emptyicon{display:grid;place-items:center;width:54px;height:54px;margin:0 auto 12px;border-radius:15px;background:#eaf9f2;color:var(--emerald)}.emptyicon .icon{width:27px;height:27px}
+.drop .big{display:inline-flex;color:var(--emerald)}.drop .big .icon{width:32px;height:32px}
+.card h2 .icon,.btn .icon,.row-h .icon{width:16px;height:16px;vertical-align:-3px;margin-right:5px}
+.card h2{display:flex;align-items:center;gap:4px}
