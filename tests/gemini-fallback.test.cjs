@@ -66,8 +66,8 @@ assert.equal(candidates.includes('gemini-1.5-flash'), false);
 const result = context.__test.generateGeminiJson({ contents: [] });
 assert.equal(result.nominal, 256020);
 assert.equal(result.merchant, 'Venam Sintesa');
-assert.equal(sleeps, 1);
-assert.equal(calls.filter((url) => url.includes('gemini-3.8-flash:generateContent')).length, 2);
+assert.equal(sleeps, 0);
+assert.equal(calls.filter((url) => url.includes('gemini-3.8-flash:generateContent')).length, 1);
 assert.equal(calls.filter((url) => url.includes('gemini-3.7-flash:generateContent')).length, 1);
 assert.equal(cache.get('GEMINI_WORKING_MODEL'), 'gemini-3.7-flash');
 
