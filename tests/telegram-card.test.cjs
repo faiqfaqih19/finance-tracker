@@ -13,7 +13,7 @@ const context = {
   UrlFetchApp: {
     fetch: (url, options) => {
       if (url.includes('/sendMessage')) sentPayload = JSON.parse(options.payload);
-      return { getResponseCode: () => 200, getContentText: () => '{}' };
+      return { getResponseCode: () => 200, getContentText: () => '{"ok":true}' };
     }
   },
   Utilities: {

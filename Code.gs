@@ -140,6 +140,22 @@ function doPost(e) {
       return handleSyncApi(payload, e);
     }
 
+    // Klaim update sebelum AI/Sheets/pengiriman pesan. Lock hanya melindungi
+    // pencatatan ID, sehingga retry paralel segera menerima OK tanpa menunggu AI.
+    const chat = payload.message ? payload.message.chat :
+      (payload.callback_query && payload.callback_query.message && payload.callback_query.message.chat);
+    if (chat && chat.type === 'private' && isAuthorizedChat(chat.id)) {
+      let claimed;
+      try {
+        claimed = claimTelegramUpdate(payload.update_id);
+      } catch (error) {
+        // Belum mulai memproses: jangan akui update jika ledger/lock gagal.
+        error.retryTelegramUpdate = true;
+        throw error;
+      }
+      if (!claimed) return HtmlService.createHtmlOutput("OK");
+    }
+
     // B. JIKA INI TOMBOL INLINE DARI TELEGRAM
     if (payload.callback_query) {
       handleTelegramCallback(payload.callback_query);
@@ -156,8 +172,45 @@ function doPost(e) {
     return jsonResponse({ ok: true, message: "No actionable payload" });
   } catch (error) {
     Logger.log("doPost Error: " + error.toString());
+    if (error.retryTelegramUpdate) throw error;
     // Jika dari Telegram, tetap kembalikan HTML agar webhook tidak stuck
     return HtmlService.createHtmlOutput("OK");
+  }
+}
+
+/**
+ * Script Properties bertahan antar-eksekusi dan saat cache terhapus.
+ * Retensi 48 jam melampaui masa antrean Telegram (24 jam). Jangan menghapus
+ * klaim setelah kegagalan/timeout: sendMessage mungkin sudah diterima Telegram.
+ * Pengguna dapat mencoba lagi dengan mengirim pesan baru (update_id baru).
+ */
+function claimTelegramUpdate(updateId) {
+  if (!Number.isSafeInteger(updateId) || updateId < 0) {
+    throw new Error("update_id Telegram tidak valid.");
+  }
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const prefix = 'TG_UPDATE_';
+    const key = prefix + updateId;
+    if (props.getProperty(key)) return false;
+
+    const now = Date.now();
+    const cleanupKey = 'TG_DEDUP_CLEANED_AT';
+    if (now - Number(props.getProperty(cleanupKey) || 0) > 86400000) {
+      const properties = props.getProperties();
+      Object.keys(properties).forEach(function(name) {
+        if (name.indexOf(prefix) === 0 && now - Number(properties[name]) > 172800000) {
+          props.deleteProperty(name);
+        }
+      });
+      props.setProperty(cleanupKey, String(now));
+    }
+    props.setProperty(key, String(now));
+    return true;
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -442,6 +495,15 @@ function handleTelegramMessage(message, updateId) {
 
   // 6. PROSES GAMBAR ATAU TEKS TRANSAKSI
 
+  // Juga hentikan retry transaksi dari deployment lama (sebelum ada ledger).
+  // Termasuk transaksi yang sudah dibatalkan: retry tidak boleh mengaktifkannya lagi.
+  const transactionId = Number.isSafeInteger(updateId) ? `TRX-${updateId}` : null;
+  if (transactionId) {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Transaksi");
+    if (sheet && findTransactionRow(sheet, transactionId) >= 2) return;
+  }
+
+  let saved;
   try {
     let result = null;
 
@@ -470,13 +532,16 @@ function handleTelegramMessage(message, updateId) {
     }
 
     // Simpan transaksi
-    result.id = updateId ? `TRX-${updateId}` : `TRX-${Date.now()}`;
-    const saved = saveToSheet(result);
-    sendTransactionCard(chatId, saved);
+    result.id = transactionId || `TRX-${Date.now()}`;
+    saved = saveToSheet(result);
   } catch (err) {
     Logger.log("Error processing transaction: " + err.toString());
     sendTelegramMessage(chatId, "⚠️ Terjadi kendala saat membaca bukti: " + err.message);
+    return;
   }
+  // Kegagalan/timeout pengiriman kartu tidak boleh memicu pesan kedua yang
+  // mengatakan pembacaan gagal padahal transaksi sudah tersimpan.
+  sendTransactionCard(chatId, saved);
 }
 
 /**
@@ -620,7 +685,9 @@ function normalizeNominalValue(value) {
 /**
  * Memanggil Gemini dengan fallback model dan retry terbatas.
  * - 404: model sudah tidak tersedia, langsung coba model berikutnya.
- * - 429/5xx: tunggu singkat lalu coba sekali lagi, kemudian pindah model.
+ * - 429/5xx: langsung pindah model, maksimal tiga panggilan tanpa sleep.
+ * Batas 25 detik diperiksa sebelum memulai panggilan cadangan; fetch aktif
+ * tetap mengikuti timeout platform Apps Script.
  * API key dikirim lewat header supaya tidak ikut tertulis di URL/log.
  */
 function generateGeminiJson(requestBody) {
@@ -630,50 +697,45 @@ function generateGeminiJson(requestBody) {
 
   const models = getGeminiModelCandidates();
   let lastStatus = 0;
+  const startedAt = Date.now();
 
-  for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
+  for (let modelIndex = 0; modelIndex < Math.min(models.length, 3); modelIndex++) {
+    if (modelIndex > 0 && Date.now() - startedAt >= 25000) break;
     const model = models[modelIndex];
 
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const response = UrlFetchApp.fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "post",
-          contentType: "application/json",
-          headers: { "x-goog-api-key": GEMINI_API_KEY },
-          payload: JSON.stringify(requestBody),
-          muteHttpExceptions: true
-        }
-      );
-
-      const status = response.getResponseCode();
-      lastStatus = status;
-
-      if (status >= 200 && status < 300) {
-        const parsed = parseGeminiJsonResponse(response.getContentText());
-        CacheService.getScriptCache().put("GEMINI_WORKING_MODEL", model, 21600);
-        return parsed;
+    const response = UrlFetchApp.fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        method: "post",
+        contentType: "application/json",
+        headers: { "x-goog-api-key": GEMINI_API_KEY },
+        payload: JSON.stringify(requestBody),
+        muteHttpExceptions: true
       }
+    );
 
-      // Model tidak ada/tidak mendukung generateContent: jangan menunggu.
-      if (status === 404 || status === 400) break;
+    const status = response.getResponseCode();
+    lastStatus = status;
 
-      const temporary = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
-      if (temporary && attempt === 0) {
-        Utilities.sleep(700 + (modelIndex * 150));
-        continue;
-      }
-
-      if (temporary) break;
-      throw new Error("Gemini menolak permintaan (HTTP " + status + "). Periksa konfigurasi API di Script Properties.");
+    if (status >= 200 && status < 300) {
+      const parsed = parseGeminiJsonResponse(response.getContentText());
+      CacheService.getScriptCache().put("GEMINI_WORKING_MODEL", model, 21600);
+      return parsed;
     }
+
+    // Model tidak ada/tidak mendukung generateContent: jangan menunggu.
+    if (status === 404 || status === 400) continue;
+
+    const temporary = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+    if (temporary) continue;
+    throw new Error("Gemini menolak permintaan (HTTP " + status + "). Periksa konfigurasi API di Script Properties.");
   }
 
   if (lastStatus === 429) {
     throw new Error("Kuota AI sedang dibatasi. Coba kirim lagi beberapa saat lagi.");
   }
   if (lastStatus >= 500) {
-    throw new Error("Layanan AI sedang sibuk. Semua model cadangan sudah dicoba; silakan kirim lagi sebentar lagi.");
+    throw new Error("Layanan AI sedang sibuk. Silakan kirim lagi sebentar lagi.");
   }
   throw new Error("Tidak ada model Gemini yang tersedia untuk membaca transaksi ini.");
 }
@@ -717,14 +779,21 @@ function getGeminiModelCandidates() {
   }
   GEMINI_FALLBACK_MODELS.forEach(function(model) { preferred.push(model); });
 
-  const available = listAvailableGeminiModels();
+  // Model yang baru berhasil dapat langsung dipakai, tanpa discovery API lagi.
+  // Daftar yang sudah ada di cache tetap dipakai untuk memilih cadangan valid.
+  let available = [];
+  const cachedAvailable = CacheService.getScriptCache().get("GEMINI_GENERATE_CONTENT_MODELS");
+  if (cachedAvailable) {
+    try { available = JSON.parse(cachedAvailable); } catch (err) {}
+  }
+  if (!cached && !available.length) available = listAvailableGeminiModels();
   const unique = preferred.filter(function(model, index, array) {
     return model && array.indexOf(model) === index;
   });
 
-  if (!available.length) return unique.slice(0, 6);
+  if (!available.length) return unique.slice(0, 3);
   const supported = unique.filter(function(model) { return available.indexOf(model) !== -1; });
-  return (supported.length ? supported : unique).slice(0, 6);
+  return (supported.length ? supported : unique).slice(0, 3);
 }
 
 function listAvailableGeminiModels() {
@@ -1158,12 +1227,17 @@ function sendTelegramMessage(chatId, text, isMarkdown = false, replyMarkup) {
   if (isMarkdown) payload.parse_mode = "Markdown";
   if (replyMarkup) payload.reply_markup = replyMarkup;
 
-  UrlFetchApp.fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+  const response = UrlFetchApp.fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   });
+  const result = JSON.parse(response.getContentText());
+  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300 || !result.ok) {
+    throw new Error("Telegram tidak mengonfirmasi pengiriman pesan.");
+  }
+  return result.result;
 }
 
 function jsonResponse(data) {
