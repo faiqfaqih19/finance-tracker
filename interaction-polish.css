@@ -1,0 +1,147 @@
+/* Applied from Emil Kowalski's design engineering, mobile-native and
+   animation-performance guidance. Keep daily finance tasks immediate. */
+:root {
+  --ease-out-ui: cubic-bezier(0.23, 1, 0.32, 1);
+  --muted: #66756f;
+  color-scheme: light;
+}
+html { -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%; }
+html.dark { color-scheme: dark; --muted: #abbab2; }
+body { overscroll-behavior-y: none; }
+main {
+  min-height: 100dvh;
+  padding-top: calc(22px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(112px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(18px, env(safe-area-inset-left, 0px));
+  padding-right: max(18px, env(safe-area-inset-right, 0px));
+}
+button, a, [role="button"], .seg label {
+  touch-action: manipulation;
+}
+button, [role="button"], .chip, .seg label {
+  -webkit-user-select: none;
+  user-select: none;
+}
+button {
+  color: inherit;
+  transition: transform 120ms var(--ease-out-ui), opacity 120ms ease;
+}
+button:active:not(:disabled) { transform: scale(0.97); }
+button:disabled, button[aria-busy="true"] { cursor: wait; opacity: 0.65; }
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, .seg label:has(:focus-visible) {
+  outline: 2px solid var(--d);
+  outline-offset: 3px;
+}
+.btn, .chip, #nav .t, #nav .fab, dialog .x, .appearance-toggle { min-height: 44px; }
+#nav .fab, dialog .x, .appearance-toggle { min-width: 44px; }
+#nav .fab i { font-style: normal; }
+#nav .theme-toggle { display: none; } /* The header provides the theme control. */
+#nav .t[aria-current="page"] { color: var(--d); }
+.mobilebrand { gap: 12px; margin-bottom: 24px; }
+.mobilebrand::after { display: none; }
+.appearance-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: var(--card); color: var(--ink); padding: 0;
+}
+.hero > strong, .money, .amt, .stat-card b, .duo b {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.hero > strong { font-size: clamp(25px, 8.4vw, 37px); }
+.stat-card { min-width: 0; }
+.stat-card > div { min-width: 0; }
+.tm small { line-height: 1.5; }
+#txSearch, dialog input, dialog select, dialog textarea,
+.hd select, #manualTokenInput {
+  font-size: 16px !important; /* Prevent iOS focus zoom without disabling pinch zoom. */
+}
+input, select, textarea { scroll-margin-block: 80px; }
+.chips { overscroll-behavior-x: contain; }
+
+/* Native dialog keeps focus trapping and Escape; CSS handles entry/exit.
+   allow-discrete is progressive enhancement: older browsers close instantly. */
+dialog {
+  width: min(440px, calc(100% - 16px));
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 16px);
+  padding: 22px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 64px #122b2429;
+  opacity: 0; transform: translateY(12px) scale(0.98);
+  transform-origin: center;
+  transition: opacity 140ms ease, transform 140ms var(--ease-out-ui),
+    display 140ms allow-discrete, overlay 140ms allow-discrete;
+}
+dialog[open] {
+  opacity: 1; transform: translateY(0) scale(1);
+  transition-duration: 220ms;
+}
+dialog::backdrop {
+  background: #11251e66; backdrop-filter: none;
+  opacity: 0; transition: opacity 140ms ease, display 140ms allow-discrete,
+    overlay 140ms allow-discrete;
+}
+dialog[open]::backdrop { opacity: 1; }
+dialog .mh h2 { font-size: 18px; letter-spacing: -0.4px; }
+dialog .x {
+  display: inline-grid; place-items: center; flex-shrink: 0;
+  border: 0; border-radius: 50%; background: var(--p); font-size: 18px;
+}
+dialog .mf {
+  position: sticky; bottom: -20px; background: var(--paper);
+  border-top: 1px solid var(--line); padding-block: 16px 4px;
+}
+dialog .mf .btn { flex: 1; }
+dialog .seg { background: var(--p); }
+dialog .seg label { cursor: pointer; }
+dialog .seg input:checked + span {
+  background: var(--card); color: var(--d);
+  box-shadow: 0 1px 4px #102a2014;
+}
+dialog .err { color: var(--red); line-height: 1.6; margin-top: 12px; }
+#toast {
+  bottom: calc(94px + env(safe-area-inset-bottom, 0px));
+  width: max-content; max-width: min(400px, calc(100vw - 32px));
+  line-height: 1.6; text-align: center;
+  background: var(--ink); color: var(--paper);
+  box-shadow: 0 8px 24px #122b2424;
+  transform: translate(-50%, 8px);
+  visibility: hidden;
+  transition: opacity 140ms ease, transform 180ms var(--ease-out-ui),
+    visibility 0s 180ms;
+}
+#toast.on {
+  opacity: 1; transform: translate(-50%, 0); visibility: visible;
+  transition-delay: 0s;
+}
+@starting-style {
+  dialog[open] { opacity: 0; transform: translateY(12px) scale(0.98); }
+  dialog[open]::backdrop { opacity: 0; }
+}
+html.dark .btn:not(.pri):not(.danger), html.dark .chip,
+html.dark input, html.dark select, html.dark textarea { background: var(--card); }
+html.dark .chip.on { background: var(--ink); color: var(--paper); }
+html.dark .ico, html.dark .emptyicon { background: var(--p); color: #74dcba; }
+html.dark .note, html.dark .tip { background: var(--p); border-color: var(--line); color: var(--ink); }
+html.dark .pill { background: #214c3c; color: #a2e6c9; }
+html.dark #nav .t.on { background: var(--p); color: #74dcba; }
+html.dark .seg input:checked + span { color: #74dcba; }
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover, .appearance-toggle:hover, dialog .x:hover { border-color: var(--muted); }
+  .tx:hover { background: var(--p); }
+}
+/* Keyboard navigation and reduced-motion users get immediate state changes. */
+html[data-input="keyboard"] button,
+html[data-input="keyboard"] dialog,
+html[data-input="keyboard"] dialog::backdrop,
+html[data-input="keyboard"] #toast { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  button, dialog, dialog::backdrop, #toast { transition: none; }
+  button:active:not(:disabled) { transform: none; }
+  @starting-style { dialog[open] { opacity: 1; transform: none; } }
+}
+@media (max-width: 699px) {
+  dialog { width: 100%; margin: auto auto 0; border-radius: 22px 22px 0 0; }
+}

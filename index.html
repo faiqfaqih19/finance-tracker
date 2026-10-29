@@ -2,8 +2,11 @@
 <html lang="id">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#10b981">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="theme-color" content="#f9fafb">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Finance Tracker — Keuangan Pribadi</title>
 <link rel="icon" href="icon.svg">
 <link rel="manifest" href="manifest.webmanifest">
@@ -13,11 +16,12 @@
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="design-bridge.css">
 <link rel="stylesheet" href="icon-tuning.css">
+<link rel="stylesheet" href="interaction-polish.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
 </head>
 <body>
 <aside class="app-sidebar"><nav id="nav" aria-label="Menu utama"></nav></aside>
-<main><div class="mobilebrand">financetracker.</div><div id="view" aria-live="polite"></div></main>
+<main><div class="mobilebrand"><span>financetracker.</span><button id="appearanceToggle" class="appearance-toggle" aria-label="Mode gelap" title="Ubah tema"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M20.5 14a8.5 8.5 0 0 1-10.5-10.5A8.5 8.5 0 1 0 20.5 14Z"/></svg></button></div><div id="view" aria-live="polite"></div></main>
 <dialog id="dlg"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="app.js"></script>
