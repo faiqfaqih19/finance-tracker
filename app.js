@@ -180,8 +180,32 @@ let syncTimer = null;
 let categoryPieChart = null;
 let monthlyTrendChart = null;
 let incomeExpenseBarChart = null;
+let chartInitTimer = null;
 
 const uuid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+
+// Keep keyboard interactions immediate; pointer feedback is handled by CSS.
+document.addEventListener('keydown', () => { document.documentElement.dataset.input = 'keyboard'; }, true);
+document.addEventListener('pointerdown', () => { document.documentElement.dataset.input = 'pointer'; }, true);
+
+let toastRemaining = 0;
+let toastStartedAt = 0;
+function resumeToastTimer() {
+  if (document.hidden || !$('#toast')?.classList.contains('on') || toastRemaining <= 0) return;
+  toastStartedAt = Date.now();
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => {
+    $('#toast')?.classList.remove('on');
+    toastRemaining = 0;
+  }, toastRemaining);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(window._toastTimer);
+    if (toastStartedAt) toastRemaining = Math.max(0, toastRemaining - (Date.now() - toastStartedAt));
+    toastStartedAt = 0;
+  } else resumeToastTimer();
+});
 
 function showToast(msg) {
   const t = $('#toast');
@@ -189,7 +213,9 @@ function showToast(msg) {
   t.textContent = msg;
   t.classList.add('on');
   clearTimeout(window._toastTimer);
-  window._toastTimer = setTimeout(() => t.classList.remove('on'), 3500);
+  toastRemaining = 3500;
+  toastStartedAt = 0;
+  resumeToastTimer();
 }
 
 // Database Operations
@@ -582,6 +608,7 @@ function getChartColors() {
 }
 
 function destroyCharts() {
+  clearTimeout(chartInitTimer);
   [categoryPieChart, monthlyTrendChart, incomeExpenseBarChart].forEach(chart => {
     if (chart) {
       chart.destroy();
@@ -610,6 +637,7 @@ function createCategoryPieChart(ctx, agg) {
     type: 'doughnut',
     data: { labels, datasets: [{ data, backgroundColor: bgColors, borderWidth: 0 }] },
     options: {
+      animation: false,
       responsive: true,
       maintainAspectRatio: true,
       cutout: '65%',
@@ -696,6 +724,7 @@ function createMonthlyTrendChart(ctx, transactions) {
       ]
     },
     options: {
+      animation: false,
       responsive: true,
       maintainAspectRatio: true,
       interaction: { mode: 'index', intersect: false },
@@ -754,6 +783,7 @@ function createIncomeExpenseBarChart(ctx, agg) {
       }]
     },
     options: {
+      animation: false,
       responsive: true,
       maintainAspectRatio: true,
       indexAxis: 'y',
@@ -789,8 +819,10 @@ function createIncomeExpenseBarChart(ctx, agg) {
 }
 
 function initCharts(agg) {
+  clearTimeout(chartInitTimer);
+  if (typeof Chart === 'undefined') return;
   // Small delay to ensure canvas elements are in DOM
-  setTimeout(() => {
+  chartInitTimer = setTimeout(() => {
     const pieCtx = document.getElementById('categoryPieChart');
     const trendCtx = document.getElementById('monthlyTrendChart');
     const barCtx = document.getElementById('incomeExpenseBarChart');
@@ -808,7 +840,7 @@ function updateCharts(agg) {
     const data = agg.categories.slice(0, 6).map(([, amt]) => amt);
     categoryPieChart.data.labels = labels;
     categoryPieChart.data.datasets[0].data = data;
-    categoryPieChart.update();
+    categoryPieChart.update('none');
   }
 
   // Update bar chart
@@ -819,7 +851,7 @@ function updateCharts(agg) {
       'rgba(179, 66, 47, 0.8)',
       agg.net >= 0 ? 'rgba(0, 77, 0, 0.8)' : 'rgba(179, 66, 47, 0.8)'
     ];
-    incomeExpenseBarChart.update();
+    incomeExpenseBarChart.update('none');
   }
 
   // Trend chart needs full rebuild for different period - just rebuild it
@@ -837,11 +869,25 @@ function initTheme() {
   const isDark = savedTheme === 'dark' || (!savedTheme && prefersDark);
   if (isDark) document.documentElement.classList.add('dark');
   else document.documentElement.classList.remove('dark');
+  syncThemeChrome();
+}
+
+function syncThemeChrome() {
+  const isDark = document.documentElement.classList.contains('dark');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', isDark ? '#172921' : '#f9fafb');
+  const button = $('#appearanceToggle');
+  if (button) {
+    button.setAttribute('aria-label', isDark ? 'Mode terang' : 'Mode gelap');
+    button.setAttribute('aria-pressed', String(isDark));
+    button.title = isDark ? 'Ganti ke mode terang' : 'Ganti ke mode gelap';
+    button.onclick = toggleTheme;
+  }
 }
 
 function toggleTheme() {
   const isDark = document.documentElement.classList.toggle('dark');
   localStorage.setItem('theme', isDark ? 'dark' : 'light');
+  syncThemeChrome();
 
   // Update theme toggle button
   const themeBtn = $('#themeToggle');
@@ -866,6 +912,7 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e =
   if (!localStorage.getItem('theme')) {
     if (e.matches) document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
+    syncThemeChrome();
 
     // Re-render charts with new colors if on dashboard
     if (currentTab === 'ringkasan') {
@@ -924,6 +971,7 @@ function renderNav() {
   `;
 
   nav.querySelectorAll('.t[data-tab]').forEach(b => {
+    if (b.dataset.tab === currentTab) b.setAttribute('aria-current', 'page');
     b.onclick = () => {
       currentTab = b.dataset.tab;
       render();
@@ -943,10 +991,8 @@ function renderNav() {
 // MAIN VIEWS
 // -------------------------------------------------------------
 function render() {
-  // Destroy charts when switching away from dashboard
-  if (currentTab !== 'ringkasan') {
-    destroyCharts();
-  }
+  // Every render replaces the canvas nodes; release old charts and pending work.
+  destroyCharts();
 
   renderNav();
   const view = $('#view');
@@ -1351,7 +1397,7 @@ function renderTransactions() {
     </div>
 
     <div style="margin-bottom: 12px;">
-      <input type="search" id="txSearch" placeholder="Cari toko, merchant, atau catatan..." value="${esc(searchQuery)}">
+      <input type="search" id="txSearch" enterkeyhint="search" placeholder="Cari toko, merchant, atau catatan..." value="${esc(searchQuery)}">
     </div>
 
     ${chipsHtml}
@@ -1426,7 +1472,7 @@ function renderDataTools() {
       <div id="manualConnectBox" style="display: none; margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px;">
         <label style="font-size: 0.82rem; font-weight: 600;">Token Koneksi:</label>
         <div style="display: flex; gap: 6px; margin-top: 4px;">
-          <input type="text" id="manualTokenInput" placeholder="Tempel token dari bot /hubungkan di sini" style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-card); color: inherit;">
+          <input type="text" id="manualTokenInput" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Tempel token dari bot /hubungkan di sini" style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-card); color: inherit;">
           <button class="btn pri" id="btnSaveManualToken">Sambungkan</button>
         </div>
       </div>
@@ -1786,6 +1832,21 @@ function attachViewListeners() {
 // -------------------------------------------------------------
 // TRANSACTION FORM DIALOG (#dlg)
 // -------------------------------------------------------------
+function prepareDialog(dlg) {
+  const title = dlg.querySelector('h2');
+  if (title) {
+    title.id = 'dialogTitle';
+    dlg.setAttribute('aria-labelledby', title.id);
+  }
+  dlg.querySelectorAll('label').forEach(label => {
+    const field = label.nextElementSibling;
+    if (field?.matches('input, select, textarea') && field.id) label.htmlFor = field.id;
+  });
+  const error = dlg.querySelector('#dlgErr');
+  if (error) error.setAttribute('role', 'alert');
+  dlg.showModal();
+}
+
 function openTxModal(tx = null) {
   const dlg = $('#dlg');
   if (!dlg) return;
@@ -1826,7 +1887,7 @@ function openTxModal(tx = null) {
     <!-- Big Amount Input -->
     <div>
       <label>Nominal (Rp)</label>
-      <input type="text" id="dlgAmount" class="big-in" placeholder="0" value="${editingTx.amount ? editingTx.amount.toLocaleString('id-ID') : ''}">
+      <input type="text" id="dlgAmount" inputmode="numeric" enterkeyhint="done" class="big-in" placeholder="0" value="${editingTx.amount ? editingTx.amount.toLocaleString('id-ID') : ''}">
     </div>
 
     <!-- Merchant / Source -->
@@ -1904,6 +1965,11 @@ function openTxModal(tx = null) {
   };
 
   $('#dlgSave').onclick = async () => {
+    const saveButton = $('#dlgSave');
+    if (saveButton.disabled) return;
+    saveButton.disabled = true;
+    saveButton.setAttribute('aria-busy', 'true');
+    saveButton.textContent = 'Menyimpan…';
     const errBox = $('#dlgErr');
     errBox.style.display = 'none';
 
@@ -1946,10 +2012,14 @@ function openTxModal(tx = null) {
     } catch (e) {
       errBox.textContent = e.message;
       errBox.style.display = 'block';
+    } finally {
+      saveButton.disabled = false;
+      saveButton.removeAttribute('aria-busy');
+      saveButton.textContent = 'Simpan';
     }
   };
 
-  dlg.showModal();
+  prepareDialog(dlg);
 }
 
 // -------------------------------------------------------------
@@ -1993,7 +2063,7 @@ function openBillModal(bill = null) {
 
     <div>
       <label>Nominal (Rp)</label>
-      <input type="text" id="billAmount" class="big-in" placeholder="0" value="${editingBill.amount ? editingBill.amount.toLocaleString('id-ID') : ''}">
+      <input type="text" id="billAmount" inputmode="numeric" enterkeyhint="done" class="big-in" placeholder="0" value="${editingBill.amount ? editingBill.amount.toLocaleString('id-ID') : ''}">
     </div>
 
     <div class="two">
@@ -2086,6 +2156,11 @@ function openBillModal(bill = null) {
   }
 
   $('#dlgSaveBill').onclick = async () => {
+    const saveButton = $('#dlgSaveBill');
+    if (saveButton.disabled) return;
+    saveButton.disabled = true;
+    saveButton.setAttribute('aria-busy', 'true');
+    saveButton.textContent = 'Menyimpan…';
     const errBox = $('#dlgErr');
     errBox.style.display = 'none';
 
@@ -2135,10 +2210,14 @@ function openBillModal(bill = null) {
     } catch (e) {
       errBox.textContent = e.message;
       errBox.style.display = 'block';
+    } finally {
+      saveButton.disabled = false;
+      saveButton.removeAttribute('aria-busy');
+      saveButton.textContent = 'Simpan';
     }
   };
 
-  dlg.showModal();
+  prepareDialog(dlg);
 }
 
 // -------------------------------------------------------------
