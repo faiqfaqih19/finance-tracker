@@ -1,0 +1,54 @@
+services:
+  waha:
+    image: ${WAHA_IMAGE:-devlikeapro/waha:arm}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:?Run setup first}
+      WAHA_DASHBOARD_USERNAME: admin
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?Run setup first}
+      WHATSAPP_SWAGGER_USERNAME: admin
+      WHATSAPP_SWAGGER_PASSWORD: ${WAHA_DASHBOARD_PASSWORD}
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+      WAHA_BASE_URL: http://waha:3000
+      WAHA_PUBLIC_URL: http://localhost:3000
+      WAHA_PRINT_QR: "false"
+      WHATSAPP_FILES_FOLDER: /app/.media
+      WHATSAPP_FILES_LIFETIME: "0"
+      WHATSAPP_HOOK_URL: http://bot:3001/webhook
+      WHATSAPP_HOOK_EVENTS: message
+      WHATSAPP_HOOK_HMAC_KEY: ${WEBHOOK_SECRET:?Run setup first}
+      WHATSAPP_HOOK_RETRIES_POLICY: constant
+      WHATSAPP_HOOK_RETRIES_DELAY_SECONDS: 3
+      WHATSAPP_HOOK_RETRIES_ATTEMPTS: 10
+      WAHA_EVENTS_DOWNLOAD_MEDIA: "true"
+      WAHA_EVENTS_DOWNLOAD_MEDIA_MIMETYPES: image/jpeg,image/png,image/webp
+    volumes:
+      - sessions:/app/.sessions
+      - media:/app/.media
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+  bot:
+    image: node:22-alpine
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "server.mjs"]
+    env_file: .env
+    environment:
+      WAHA_URL: http://waha:3000
+      STATE_DIR: /state
+    volumes:
+      - ./:/app:ro
+      - state:/state
+    # The webhook is reachable only inside Docker, not on the public internet.
+    expose: ["3001"]
+    init: true
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+volumes:
+  sessions:
+  media:
+  state:
