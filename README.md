@@ -47,3 +47,7 @@ Ini penerapan pada website, bukan pemasangan skill global atau penambahan framew
 Jalankan `node --check app.js` dan `node --test tests/*.test.cjs` untuk pemeriksaan lokal.
 Uji Safari iPhone asli tetap diperlukan untuk keyboard layar, focus zoom, notch,
 home indicator, dan rasa sentuhan; pemeriksaan browser desktop tidak membuktikannya.
+
+## Input nota melalui WhatsApp
+
+Integrasi WAHA gratis untuk dijalankan di MacBook tersedia di [panduan WhatsApp](whatsapp/README.md). Menggunakan spreadsheet dan API sinkronisasi Finance Tracker yang sama.
